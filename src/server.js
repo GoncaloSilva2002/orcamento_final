@@ -1,6 +1,7 @@
 ﻿const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const os = require('os');
 const express = require('express');
 const ledTransformers = require('../public/led-transformers');
@@ -46,7 +47,9 @@ const adminPassword = process.env.SILWOOD_ADMIN_PASSWORD || 'silwood';
 const supabaseUrl = String(process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || '';
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const useSupabaseAuth = Boolean(supabaseUrl && supabaseAnonKey);
+// The application uses the project's public.utilizador table for accounts.
+// The service role is required because all account operations happen on the server.
+const useSupabaseAuth = Boolean(supabaseUrl && supabaseServiceRoleKey);
 const allowBootstrapAdmin = process.env.SILWOOD_BOOTSTRAP_ADMIN === 'true';
 const adminSessions = new Map();
 const sessionMaxAgeSeconds = 8 * 60 * 60;
@@ -63,6 +66,10 @@ function localNetworkUrls() {
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(runtimeRootDir(), 'public')));
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  next();
+});
 
 const { createCatalogStore } = require('./catalog-store');
 const { createPricingEngine } = require('./pricing-engine');
@@ -72,27 +79,241 @@ const catalogStore = createCatalogStore({
   seed: path.join(runtimeRootDir(), 'data/catalog-seed.json')
 });
 let catalogRevision = -1;
+const defaultLaborPrices = { plates: 2.02, edges: 0.32, drawers: 9.58 };
+let laborPrices = { ...defaultLaborPrices };
+let costItems = [];
+const customEdgebanderMetersPerHour = 120;
+const customLevelerLaborMinutes = 5;
+const customLevelerConsumableUnit = 0.06;
+const customLevelerConsumableMultiplier = 2;
+const customLevelerCostMultiplier = 2;
+const customEdgebanderClientMultiplier = 1.5;
+const customLevelerClientMultiplier = 1.5;
+const customFeetLaborSeconds = 60;
+const customFeetScrewUnit = 0.06;
+const customFeetScrewCount = 4;
+const customFeetClientMultiplier = 1.5;
+const customCncDivisor = 5.769;
+const customCncClientMultiplier = 1.5;
+const customPanelSawDivisor = 23.184;
+const customPanelSawClientMultiplier = 1.5;
+const customModuleAssemblyLaborMinutes = 30;
+const customModuleAssemblyAreaSquareMeters = 2.64;
+const customPlateClientMultiplier = 1.92;
+const customPlateResellerMultiplier = 1.45;
+const previousCustomPlateResellerMultiplier = 1.5;
+const customPaintingDivisor = 8;
+const customPaintingClientMultiplier = 1.5;
+function normalizedCostItemName(value) {
+  return String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+function costItemNamed(items, fragment) {
+  return (Array.isArray(items) ? items : []).find(item => normalizedCostItemName(item?.name).includes(fragment));
+}
+function laborHourlyPriceFromCostItems(items) {
+  const labor = costItemNamed(items, 'mao') && normalizedCostItemName(costItemNamed(items, 'mao')?.name).includes('obra')
+    ? costItemNamed(items, 'mao')
+    : (Array.isArray(items) ? items.find(item => {
+      const name = normalizedCostItemName(item?.name);
+      return name.includes('mao') && name.includes('obra');
+    }) : null);
+  return Number(labor?.cost) > 0 ? Number(labor.cost) : Number(labor?.client) || 0;
+}
+function panelSawCostPerSquareMeter(items) {
+  const saw = costItemNamed(items, 'seccionadora');
+  if (!saw) return null;
+  return ((laborHourlyPriceFromCostItems(items) + (Number(saw.cost) || 0)) / customPanelSawDivisor) * customPanelSawClientMultiplier;
+}
+function moduleAssemblyLaborPerSquareMeter(items) {
+  return laborHourlyPriceFromCostItems(items) * (customModuleAssemblyLaborMinutes / 60) / customModuleAssemblyAreaSquareMeters;
+}
+function plateCostPerSquareMeter(supplierPrice, items, fallbackLabor) {
+  const sawRate = panelSawCostPerSquareMeter(items);
+  const laborRate = sawRate === null ? (Number(fallbackLabor) || 0) : sawRate;
+  return (Number(supplierPrice) || 0) + laborRate + moduleAssemblyLaborPerSquareMeter(items);
+}
+function normalizeLaborPrices(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return Object.keys(defaultLaborPrices).reduce((result, key) => {
+    const number = Number(source[key]);
+    result[key] = Number.isFinite(number) && number >= 0 ? number : defaultLaborPrices[key];
+    return result;
+  }, {});
+}
+function normalizeCostItems(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item, index) => {
+    const source = item && typeof item === 'object' ? item : {};
+    const name = String(source.name ?? source.nome ?? '').trim();
+    const typeText = String(source.type ?? source.tipo ?? '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const nameText = name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const cost = Number(source.cost ?? source.custo ?? 0);
+    const client = Number(source.client ?? source.preco_cliente ?? 0);
+    const type = typeText.includes('roupeiro') ? 'roupeiro' : typeText.includes('cozinha') ? 'cozinha' : typeText.includes('ambos') || typeText.includes('os 2') || typeText.includes('os dois') ? 'ambos' : 'ambos';
+    return {
+      id: source.id ?? source.catalogId ?? ('cost:legacy:' + index),
+      name,
+      type,
+      cost: Number.isFinite(cost) && cost >= 0 ? cost : 0,
+      client: Number.isFinite(client) && client >= 0 ? client : 0
+    };
+  }).filter(item => item.name);
+}
+function calculateCustomCostPrices(value) {
+  const items = normalizeCostItems(value);
+  const laborHourlyPrice = laborHourlyPriceFromCostItems(items);
+  return items.map(item => {
+    const name = normalizedCostItemName(item.name);
+    if (name.includes('orladora')) {
+      const hourlyCost = laborHourlyPrice + (Number(item.cost) || 0);
+      item.client = (hourlyCost / customEdgebanderMetersPerHour) * customEdgebanderClientMultiplier;
+    }
+    if (name.includes('cnc')) {
+      const hourlyCost = laborHourlyPrice + (Number(item.cost) || 0);
+      item.client = (hourlyCost / customCncDivisor) * customCncClientMultiplier;
+    }
+    if (name.includes('seccionadora')) {
+      const hourlyCost = laborHourlyPrice + (Number(item.cost) || 0);
+      item.client = (hourlyCost / customPanelSawDivisor) * customPanelSawClientMultiplier;
+    }
+    if (name.includes('pintura')) {
+      const totalCost = (Number(item.cost) || 0) + laborHourlyPrice;
+      item.client = (totalCost / customPaintingDivisor) * customPaintingClientMultiplier;
+    }
+    if (name.includes('nivelador')) {
+      const laborCost = laborHourlyPrice * (customLevelerLaborMinutes / 60);
+      const consumables = (customLevelerConsumableUnit * customLevelerConsumableMultiplier) * customLevelerConsumableMultiplier;
+      const levelerCost = (Number(item.cost) || 0) * customLevelerCostMultiplier;
+      item.client = (laborCost + consumables + levelerCost) * customLevelerClientMultiplier;
+    }
+    if (name.includes('pes') && (item.type === 'cozinha' || item.type === 'roupeiro')) {
+      const laborCost = laborHourlyPrice * (customFeetLaborSeconds / 3600);
+      const consumables = customFeetScrewUnit * customFeetScrewCount;
+      const feetCost = Number(item.cost) || 0;
+      item.client = (laborCost + consumables + feetCost) * customFeetClientMultiplier;
+    }
+    return item;
+  });
+}
+const drawerAssemblyCostNames = {
+  cozinha: 'Montagem de gavetas - Cozinha',
+  roupeiro: 'Montagem de gavetas - Roupeiro'
+};
+function isDrawerAssemblyCost(item) {
+  const name = normalizedCostItemName(item?.name);
+  return (name.includes('montagem') && name.includes('gaveta')) ||
+    (name.includes('mao') && name.includes('obra') && name.includes('gaveta'));
+}
+function drawerAssemblyKind(item) {
+  const name = normalizedCostItemName(item?.name);
+  return name.includes('roupeiro') || normalizedCostItemName(item?.type) === 'roupeiro' ? 'roupeiro' : 'cozinha';
+}
+function drawerAssemblyFormulaCost(type, items = costItems) {
+  const wardrobe = type === 'roupeiro';
+  const screwCost = wardrobe ? 4 * 0.07 : 8 * 0.06;
+  const laborMinutes = wardrobe ? 10 : 7;
+  return screwCost + laborHourlyPriceFromCostItems(items) * laborMinutes / 60;
+}
+function drawerAssemblyCost(type = 'cozinha', items = costItems) {
+  const wantedType = type === 'roupeiro' ? 'roupeiro' : 'cozinha';
+  const item = (Array.isArray(items) ? items : []).find(candidate =>
+    isDrawerAssemblyCost(candidate) && drawerAssemblyKind(candidate) === wantedType
+  );
+  return item ? Math.max(0, Number(item.cost) || 0) : drawerAssemblyFormulaCost(wantedType, items);
+}
+function ensureDrawerAssemblyCostItems(items) {
+  const result = normalizeCostItems(items);
+  for (const type of ['cozinha', 'roupeiro']) {
+    let item = result.find(candidate => isDrawerAssemblyCost(candidate) && drawerAssemblyKind(candidate) === type);
+    if (!item) {
+      item = {
+        id: 'cost:legacy:drawer-assembly-' + type,
+        name: drawerAssemblyCostNames[type],
+        type,
+        cost: 0,
+        client: 0
+      };
+      result.push(item);
+    }
+    item.name = drawerAssemblyCostNames[type];
+    item.type = type;
+    item.cost = drawerAssemblyFormulaCost(type, result);
+    item.client = 0;
+  }
+  return result;
+}
+function syncDrawerLaborFromCostItems() {
+  laborPrices = { ...laborPrices, drawers: drawerAssemblyCost('cozinha') };
+}
+function customPaintingServiceCostPerSquareMeter(items = costItems) {
+  const item = costItemNamed(items, 'pintura');
+  return item ? Number(item.client) || 0 : null;
+}
+function syncPaintingServiceCosts(items = catalog?.paintings, costs = costItems) {
+  const serviceCostPerM2 = customPaintingServiceCostPerSquareMeter(costs) ?? 0;
+  (Array.isArray(items) ? items : []).forEach(item => {
+    if (comparableText(item?.name) === comparableText('Nenhuma')) return;
+    // The Costs-tab rate contributes to internal cost only. Keep the
+    // painting's editable client price independent.
+    item.serviceCostPerM2 = serviceCostPerM2;
+    item.reseller = Number(item.client) || 0;
+  });
+}
+function syncEdgeLaborFromEdgebander() {
+  const edgebander = costItemNamed(costItems, 'orladora');
+  const clientPricePerMeter = Number(edgebander?.client);
+  if (Number.isFinite(clientPricePerMeter) && clientPricePerMeter >= 0) laborPrices.edges = clientPricePerMeter;
+}
+function markDoorSystemDuplicates(items) {
+  const seen = new Map();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    if (!item) return;
+    delete item.duplicateOf;
+    const key = comparableText(item.name || item.item || item.label);
+    if (!key) return;
+    const existing = seen.get(key);
+    if (existing) item.duplicateOf = existing.catalogId || key;
+    else seen.set(key, item);
+  });
+  return items;
+}
 function installCatalog(row) {
   if (row.revision < catalogRevision) return;
-  workbookData = createPricingEngine(structuredClone(row.data));
+  const catalogData = structuredClone(row.data);
+  laborPrices = normalizeLaborPrices(row.data.laborPrices);
+  costItems = ensureDrawerAssemblyCostItems(calculateCustomCostPrices(catalogData.costs));
+  catalogData.costs = costItems.map(item => ({ ...item }));
+  syncPaintingServiceCosts(catalogData.catalog?.paintings, costItems);
+  workbookData = createPricingEngine(catalogData);
   ({ catalog, lists, typePresets, enrichModules, calculateModulePrice } = workbookData);
+  syncPaintingServiceCosts();
+  syncDrawerLaborFromCostItems();
+  syncEdgeLaborFromEdgebander();
+  syncPanelSawPlatePricing();
+  recalculateCatalogLaborCosts();
+  markDoorSystemDuplicates(catalog.doorSystems);
   catalogRevision = row.revision;
   lists.interiores = [...new Set(catalog.plates.map(item => item.name))];
   lists.exteriores = lists.interiores.slice();
-  lists.pinturas = catalog.paintings.map(item => item.name);
-  lists.sistemasPorta = catalog.doorSystems.map(item => item.name);
+  lists.pinturas = ['Nenhuma', ...catalog.paintings.map(item => item.name).filter(name => name && name !== 'Nenhuma')];
+  lists.sistemasPorta = catalog.doorSystems.filter(item => !item.duplicateOf).map(item => item.name);
   lists.dobradicas = catalog.hinges.map(item => item.name);
   lists.orlas = catalog.edges.map(item => item.name);
+  ensureRipadoCatalogItem();
   lists.extraGroups = [...new Set(catalog.extras.map(item => item.group))];
   Object.assign(quoteSeed, { catalog, lists, typePresets });
   quoteSeed.source = { storage: catalogStore.mode, present: true, note: 'Catálogo independente do Excel' };
 }
 function catalogSnapshot() {
-  return structuredClone({ schemaVersion: 1, catalog, lists, typePresets, feetPrices: workbookData.feetPrices });
+  return structuredClone({ schemaVersion: 1, catalog, lists, typePresets, feetPrices: workbookData.feetPrices, laborPrices, costs: costItems });
 }
 async function refreshCatalog() { installCatalog(await catalogStore.read()); }
 app.use('/api', async (req, res, next) => {
-  if (!['/bootstrap', '/calculate', '/supplier-prices', '/supplier-prices/plate', '/supplier-prices/item'].includes(req.path)) return next();
+  if (!['/bootstrap', '/calculate', '/supplier-prices', '/supplier-prices/plate', '/supplier-prices/item', '/supplier-prices/cost'].includes(req.path)) return next();
+  if ((req.method === 'PUT' && req.path === '/supplier-prices') || (req.method === 'POST' && req.path === '/supplier-prices/plate')) return next();
+  // A gravação já atualizou o catálogo em memória; não voltar a ler todas as
+  // tabelas apenas para recalcular o orçamento imediatamente a seguir.
+  if (req.method === 'POST' && req.path === '/calculate' && req.query.current === '1') return next();
   try { await refreshCatalog(); next(); }
   catch (error) { res.status(503).json({ error: error.message }); }
 });
@@ -105,7 +326,7 @@ function saveSupplierPrices(payload) {
     let next;
     try { applySupplierPayload(payload); next = catalogSnapshot(); }
     finally { installCatalog({ data: before, revision }); }
-    const saved = await catalogStore.save(next, revision);
+    const saved = await catalogStore.save(next, revision, payload);
     installCatalog(saved);
     return { updated: Object.values(payload).reduce((n, items) => n + (Array.isArray(items) ? items.length : 0), 0), storage: catalogStore.mode };
   });
@@ -113,20 +334,44 @@ function saveSupplierPrices(payload) {
   return operation;
 }
 
-function deleteSupplierCatalogItem(type, index, catalogId) {
+function deleteSupplierCatalogItem(type, index, catalogId, reference) {
   const payload = {};
-  if (!['plates', 'paintings', 'paintingComponents', 'edges', 'extras', 'drawerComponents', 'hinges', 'hingeComponents', 'openingSystemComponents'].includes(type)) {
+  if (!['plates', 'paintings', 'paintingComponents', 'edges', 'extras', 'doorSystems', 'drawerComponents', 'hinges', 'hingeComponents', 'openingSystemComponents'].includes(type)) {
     throw new Error('Tipo de material invalido.');
   }
   const itemIndex = Number(index);
   if (!Number.isInteger(itemIndex) || itemIndex < 0) throw new Error('Indice do material invalido.');
-  payload[type] = [{ catalogId, __dirtyIndex: itemIndex, __delete: true }];
+  if (catalogStore.mode === 'supabase') {
+    return catalogStore.deleteUserDatabaseItem(type, catalogId, reference);
+  }
+  payload[type] = [{ catalogId, __dirtyIndex: itemIndex, reference, __delete: true }];
   return saveSupplierPrices(payload);
 }
-const platePricingRules = { labor: 2.02, clientMultiplier: 3, resellerMultiplier: 1.4 };
+const platePricingRules = { labor: defaultLaborPrices.plates, clientMultiplier: 3, resellerMultiplier: 1.4 };
+function syncPanelSawPlatePricing() {
+  const costRate = panelSawCostPerSquareMeter(costItems);
+  platePricingRules.labor = costRate === null ? laborPrices.plates : costRate;
+}
 const skirtingLacquerClientPerMeter = 6;
 const wardrobeDrawerGroup = 'Gavetas Roupeiro';
+const manualExtraGroup = 'Manual';
 const transportExtraGroup = 'Transporte e embalamento';
+const ripadoExtraGroup = 'Ripado/Efeitos';
+const ripadoItemName = 'Ripado';
+const ripadoDefaultClientPrice = 85;
+// A partir de 10 unidades o cliente paga 65% do preço unitário do Ripado.
+const ripadoVolumeQuantity = 10;
+const ripadoVolumeFactor = 0.65;
+// O efeito almofada recuada custa ao cliente 15% do preço unitário do módulo escolhido.
+const pillowEffectItemName = 'Efeito almofada recuada';
+const pillowEffectModuleFactor = 0.15;
+const roundsItemName = 'Redondos';
+const roundsDefaultClientPrice = 200;
+const internationalPackagingItemName = 'Embalamento Internacional Standard';
+const lacqueredInternationalPackagingItemName = 'Embalamento Internacional Lacado';
+const nationalPackagingItemName = 'Embalamento Nacional Standard';
+const lacqueredNationalPackagingItemName = 'Embalamento Nacional Lacado';
+const internationalPackagingClientMultiplier = 2;
 const wardrobeDrawerItem = 'Gaveta Roupeiro';
 
 function parseCookies(req) {
@@ -207,10 +452,11 @@ async function supabaseJson(pathname, options = {}) {
   if (!apiKey) throw new Error('Supabase nao configurado.');
   const headers = {
     apikey: apiKey,
-    Authorization: options.accessToken ? 'Bearer ' + options.accessToken : 'Bearer ' + apiKey,
     'Content-Type': 'application/json',
     ...(options.headers || {})
   };
+  const bearer = options.accessToken || (apiKey.includes('.') ? apiKey : '');
+  if (bearer) headers.Authorization = 'Bearer ' + bearer;
   const response = await fetch(supabaseUrl + pathname, {
     method: options.method || 'GET',
     headers,
@@ -228,34 +474,52 @@ async function supabaseJson(pathname, options = {}) {
 }
 
 async function loginWithSupabase(username, password) {
-  const auth = await supabaseJson('/auth/v1/token?grant_type=password', {
-    method: 'POST',
-    body: { email: username, password }
-  });
-  const user = auth.user || {};
-  const accessToken = auth.access_token;
-  if (!user.id || !accessToken) throw new Error('Login Supabase sem utilizador valido.');
-  const profiles = await supabaseJson('/rest/v1/profiles?select=id,name,role,active&id=eq.' + encodeURIComponent(user.id), {
-    accessToken
-  });
-  const profile = Array.isArray(profiles) ? profiles[0] : null;
-  if (profile && profile.active === false) throw new Error('Utilizador desativado.');
+  const value = String(username || '').trim();
+  const select = 'id,nome,email,user_name,password,id_permissao,active,permissao(permissao)';
+  const find = async (field) => {
+    try {
+      return await supabaseJson('/rest/v1/utilizador?select=' + select + '&' + field + '=eq.' + encodeURIComponent(value) + '&limit=1', { serviceRole: true });
+    } catch (error) {
+      if (!String(error.message || '').includes('column utilizador.active does not exist')) throw error;
+      return supabaseJson('/rest/v1/utilizador?select=id,nome,email,user_name,password,id_permissao,permissao(permissao)&' + field + '=eq.' + encodeURIComponent(value) + '&limit=1', { serviceRole: true });
+    }
+  };
+  let rows = await find('user_name');
+  let row = Array.isArray(rows) ? rows[0] : null;
+  if (!row) {
+    rows = await find('email');
+    row = Array.isArray(rows) ? rows[0] : null;
+  }
+  if (!row || !(await bcrypt.compare(password, String(row.password || '')))) {
+    const error = new Error('Credenciais invalidas.');
+    error.status = 401;
+    throw error;
+  }
+  if (row.active === false) throw new Error('Utilizador desativado.');
   return {
-    userId: user.id,
-    email: user.email || username,
-    name: profile?.name || user.user_metadata?.name || user.email || username,
-    role: profile?.role || user.app_metadata?.role || user.user_metadata?.role || 'user'
+    userId: String(row.id),
+    email: row.email || value,
+    name: row.nome || row.user_name || value,
+    role: roleFromPermission(row.permissao?.permissao)
   };
 }
 
 function requireSupabaseUserAdmin() {
-  if (!useSupabaseAuth) throw new Error('Configura SUPABASE_URL e SUPABASE_ANON_KEY para gerir utilizadores.');
+  if (!supabaseUrl) throw new Error('Configura SUPABASE_URL no servidor para gerir utilizadores.');
   if (!supabaseServiceRoleKey) throw new Error('Configura SUPABASE_SERVICE_ROLE_KEY no servidor para criar utilizadores.');
 }
 
 function normalizeUserRole(role) {
-  if (role === 'admin') return 'admin';
-  if (role === 'reseller' || role === 'revendedor') return 'reseller';
+  const value = String(role || '').trim().toLowerCase();
+  if (value === 'admin') return 'admin';
+  if (value === 'reseller' || value === 'revendedor') return 'reseller';
+  return 'guest';
+}
+
+function roleFromPermission(permission) {
+  const value = String(permission || '').trim().toLowerCase();
+  if (value.includes('admin')) return 'admin';
+  if (value.includes('reseller') || value.includes('revend')) return 'reseller';
   return 'guest';
 }
 
@@ -269,37 +533,37 @@ function normalizeUserProfileInput(body) {
   };
 }
 
-async function upsertSupabaseProfile(profile) {
-  const rows = await supabaseJson('/rest/v1/profiles', {
-    method: 'POST',
-    serviceRole: true,
-    headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-    body: {
-      id: profile.id,
-      name: profile.name || null,
-      role: normalizeUserRole(profile.role),
-      active: profile.active !== false,
-      updated_at: new Date().toISOString()
-    }
-  });
-  return Array.isArray(rows) ? rows[0] : rows;
+async function permissionIdForRole(role) {
+  const wanted = normalizeUserRole(role);
+  const rows = await supabaseJson('/rest/v1/permissao?select=id,permissao&order=id.asc', { serviceRole: true });
+  const permissions = Array.isArray(rows) ? rows : [];
+  const permission = permissions.find((row) => roleFromPermission(row.permissao) === wanted);
+  if (!permission) {
+    const label = wanted === 'admin' ? 'Admin' : wanted === 'reseller' ? 'Revendedor' : 'Convidado';
+    throw new Error('A tabela permissao não tem uma permissão "' + label + '". Cria essa permissão antes de criar o utilizador.');
+  }
+  return permission.id;
 }
 
 async function listSupabaseUsers() {
   requireSupabaseUserAdmin();
-  const auth = await supabaseJson('/auth/v1/admin/users', { serviceRole: true });
-  const profiles = await supabaseJson('/rest/v1/profiles?select=id,name,role,active,created_at,updated_at', { serviceRole: true });
-  const profileById = new Map((Array.isArray(profiles) ? profiles : []).map(profile => [profile.id, profile]));
-  return (auth.users || []).map(user => {
-    const profile = profileById.get(user.id) || {};
+  let rows;
+  try {
+    rows = await supabaseJson('/rest/v1/utilizador?select=id,nome,email,user_name,id_permissao,active,permissao(permissao)&order=id.asc', { serviceRole: true });
+  } catch (error) {
+    if (!String(error.message || '').includes('column utilizador.active does not exist')) throw error;
+    rows = await supabaseJson('/rest/v1/utilizador?select=id,nome,email,user_name,id_permissao,permissao(permissao)&order=id.asc', { serviceRole: true });
+  }
+  return (Array.isArray(rows) ? rows : []).map((user) => {
     return {
       id: user.id,
+      username: user.user_name || '',
       email: user.email || '',
-      name: profile.name || user.user_metadata?.name || '',
-      role: normalizeUserRole(profile.role || user.app_metadata?.role || user.user_metadata?.role),
-      active: profile.active !== false,
-      createdAt: profile.created_at || user.created_at || '',
-      lastSignInAt: user.last_sign_in_at || ''
+      name: user.nome || user.user_name || '',
+      role: roleFromPermission(user.permissao?.permissao),
+      active: user.active !== false,
+      createdAt: '',
+      lastSignInAt: ''
     };
   });
 }
@@ -309,19 +573,37 @@ async function createSupabaseUser(body) {
   const input = normalizeUserProfileInput(body);
   if (!input.email || !input.email.includes('@')) throw new Error('Preenche um email valido.');
   if (input.password.length < 6) throw new Error('A palavra-passe deve ter pelo menos 6 caracteres.');
-  const created = await supabaseJson('/auth/v1/admin/users', {
+  const username = String(body?.username || body?.user_name || input.email.split('@')[0] || '').trim();
+  if (!username) throw new Error('Não foi possível determinar o nome de utilizador.');
+  const duplicateUsername = await supabaseJson('/rest/v1/utilizador?select=id&user_name=eq.' + encodeURIComponent(username) + '&limit=1', { serviceRole: true });
+  if (Array.isArray(duplicateUsername) && duplicateUsername.length) throw new Error('Já existe um utilizador com esse nome de utilizador.');
+  const duplicateEmail = await supabaseJson('/rest/v1/utilizador?select=id&email=eq.' + encodeURIComponent(input.email) + '&limit=1', { serviceRole: true });
+  if (Array.isArray(duplicateEmail) && duplicateEmail.length) throw new Error('Já existe um utilizador com esse email.');
+  const permissionId = await permissionIdForRole(input.role);
+  const passwordHash = await bcrypt.hash(input.password, 10);
+  const createOptions = {
     method: 'POST',
     serviceRole: true,
+    headers: { Prefer: 'return=representation' },
     body: {
+      nome: input.name || username,
       email: input.email,
-      password: input.password,
-      email_confirm: true,
-      user_metadata: { name: input.name }
+      user_name: username,
+      password: passwordHash,
+      id_permissao: permissionId,
+      active: input.active
     }
-  });
-  const user = created.user || created;
-  if (!user.id) throw new Error('O Supabase nao devolveu o utilizador criado.');
-  await upsertSupabaseProfile({ id: user.id, name: input.name, role: input.role, active: input.active });
+  };
+  let created;
+  try {
+    created = await supabaseJson('/rest/v1/utilizador', createOptions);
+  } catch (error) {
+    if (!String(error.message || '').includes('column utilizador.active does not exist')) throw error;
+    delete createOptions.body.active;
+    created = await supabaseJson('/rest/v1/utilizador', createOptions);
+  }
+  const user = Array.isArray(created) ? created[0] : created;
+  if (!user?.id) throw new Error('A base de dados não devolveu o utilizador criado.');
   return user.id;
 }
 
@@ -331,25 +613,35 @@ async function updateSupabaseUser(id, body) {
   if (!userId) throw new Error('Utilizador invalido.');
   const password = String(body?.password || '');
   const email = String(body?.email || '').trim().toLowerCase();
-  if (password || email) {
-    const authUpdate = {};
-    if (email) authUpdate.email = email;
-    if (password) {
-      if (password.length < 6) throw new Error('A palavra-passe deve ter pelo menos 6 caracteres.');
-      authUpdate.password = password;
-    }
-    await supabaseJson('/auth/v1/admin/users/' + encodeURIComponent(userId), {
-      method: 'PUT',
-      serviceRole: true,
-      body: authUpdate
-    });
+  const update = {};
+  if (Object.prototype.hasOwnProperty.call(body || {}, 'name')) update.nome = String(body?.name || '').trim();
+  if (email) {
+    if (!email.includes('@')) throw new Error('Preenche um email valido.');
+    update.email = email;
   }
-  await upsertSupabaseProfile({
-    id: userId,
-    name: String(body?.name || '').trim(),
-    role: normalizeUserRole(body?.role),
-    active: body?.active !== false
-  });
+  if (password) {
+    if (password.length < 6) throw new Error('A palavra-passe deve ter pelo menos 6 caracteres.');
+    update.password = await bcrypt.hash(password, 10);
+  }
+  if (Object.prototype.hasOwnProperty.call(body || {}, 'role')) update.id_permissao = await permissionIdForRole(body.role);
+  if (Object.prototype.hasOwnProperty.call(body || {}, 'active')) update.active = body.active !== false;
+  if (Object.keys(update).length) {
+    const updateOptions = {
+      method: 'PATCH',
+      serviceRole: true,
+      headers: { Prefer: 'return=minimal' },
+      body: update
+    };
+    try {
+      await supabaseJson('/rest/v1/utilizador?id=eq.' + encodeURIComponent(userId), updateOptions);
+    } catch (error) {
+      if (!String(error.message || '').includes('column utilizador.active does not exist')) throw error;
+      delete updateOptions.body.active;
+      if (Object.keys(updateOptions.body).length) {
+        await supabaseJson('/rest/v1/utilizador?id=eq.' + encodeURIComponent(userId), updateOptions);
+      }
+    }
+  }
 }
 
 function requireSupabaseHistory() {
@@ -361,8 +653,8 @@ function requireSupabaseHistory() {
 function normalizeQuoteHistoryEntry(row, profileById = new Map()) {
   const profile = profileById.get(row.owner_id) || {};
   return {
-    id: row.id,
-    userId: row.owner_id,
+    id: String(row.id ?? ''),
+    userId: String(row.owner_id ?? ''),
     userName: profile.name || profile.email || '',
     label: row.label || 'Sem nome',
     updatedAt: row.updated_at || row.created_at || '',
@@ -373,18 +665,34 @@ function normalizeQuoteHistoryEntry(row, profileById = new Map()) {
 async function profileMapForUserIds(userIds) {
   const ids = Array.from(new Set((userIds || []).filter(Boolean)));
   if (!ids.length) return new Map();
-  const query = '/rest/v1/profiles?select=id,name&id=in.(' + ids.map(encodeURIComponent).join(',') + ')';
+  const query = '/rest/v1/utilizador?select=id,nome,email&id=in.(' + ids.map(encodeURIComponent).join(',') + ')';
   const rows = await supabaseJson(query, { serviceRole: true });
-  return new Map((Array.isArray(rows) ? rows : []).map(row => [row.id, row]));
+  return new Map((Array.isArray(rows) ? rows : []).map(row => [String(row.id), { id: row.id, name: row.nome, email: row.email }]));
 }
 
-async function quoteHistoryForSession(session, requestedUserId) {
+async function quoteHistoryForSession(session, requestedUserId, search) {
   requireSupabaseHistory();
   const admin = session.role === 'admin';
   const ownerId = admin && requestedUserId ? String(requestedUserId) : session.userId;
   if (!ownerId) throw new Error('Sessao sem utilizador Supabase associado.');
+  const ownerFilter = '&owner_id=eq.' + encodeURIComponent(ownerId);
+  const searchText = comparableText(search);
+  let idFilter = '';
+  if (searchText) {
+    // Search every saved quote by label, ignoring accents and case.
+    const labels = await supabaseJson(
+      '/rest/v1/quote_history?select=id,label' + ownerFilter + '&order=updated_at.desc',
+      { serviceRole: true }
+    );
+    const ids = (Array.isArray(labels) ? labels : [])
+      .filter(row => comparableText(row.label).includes(searchText))
+      .slice(0, 100)
+      .map(row => encodeURIComponent(row.id));
+    if (!ids.length) return [];
+    idFilter = '&id=in.(' + ids.join(',') + ')';
+  }
   const rows = await supabaseJson(
-    '/rest/v1/quote_history?select=id,owner_id,label,snapshot,created_at,updated_at&owner_id=eq.' + encodeURIComponent(ownerId) + '&order=updated_at.desc&limit=100',
+    '/rest/v1/quote_history?select=id,owner_id,label,snapshot,created_at,updated_at' + ownerFilter + idFilter + '&order=updated_at.desc&limit=100',
     { serviceRole: true }
   );
   const profileById = await profileMapForUserIds([ownerId]);
@@ -515,6 +823,7 @@ function normalizeExtraGroupName(group) {
   if (text === 'PUXADORES') return 'Puxadores';
   if (text === 'TOMADAS') return 'Tomadas';
   if (text === 'GAVETAS') return 'Gavetas';
+  if (text === comparableText(manualExtraGroup)) return manualExtraGroup;
   if (text.includes('PES') && text.includes('FIXACAO') && text.includes('ORGANIZACAO')) return 'Pés, Fixação e Organização';
   if (text === 'OUTROS') return 'Outros';
   return String(group || '').replace(/\s+/g, ' ').trim();
@@ -522,7 +831,37 @@ function normalizeExtraGroupName(group) {
 
 function isManualPricedExtra(extra) {
   const group = normalizeExtraGroupName(extra?.group);
-  return group === 'Outros' || group === transportExtraGroup;
+  if (group === manualExtraGroup) return true;
+  if (group === transportExtraGroup) return !findCatalogExtraForQuote(extra);
+  if (group !== 'Outros') return false;
+  return !findCatalogExtraForQuote(extra);
+}
+
+function isInternationalPackagingItem(item) {
+  return internationalPackagingLaborMinutesFor(item) > 0;
+}
+
+function internationalPackagingLaborMinutesFor(item) {
+  const name = comparableItemText(item?.item || item?.label || item?.name || item?.reference);
+  if (name === comparableItemText(internationalPackagingItemName)) return 20;
+  if (name === comparableItemText(lacqueredInternationalPackagingItemName)) return 35;
+  if (name === comparableItemText(nationalPackagingItemName)) return 10;
+  if (name === comparableItemText(lacqueredNationalPackagingItemName)) return 25;
+  return 0;
+}
+
+function internationalPackagingInternalCost(item, costs = costItems) {
+  return (Number(item?.cost) || 0) + laborHourlyPriceFromCostItems(costs) * internationalPackagingLaborMinutesFor(item) / 60;
+}
+
+function recalculateInternationalPackagingPrices(items = catalog?.extras, costs = costItems) {
+  (Array.isArray(items) ? items : []).forEach(item => {
+    if (normalizeExtraGroupName(item?.group) !== transportExtraGroup || !isInternationalPackagingItem(item)) return;
+    item.client = internationalPackagingInternalCost(item, costs) * internationalPackagingClientMultiplier;
+    item.reseller = item.client;
+    item.manualClient = false;
+    item.manualReseller = false;
+  });
 }
 
 function comparableItemText(value) {
@@ -540,6 +879,54 @@ function catalogExtraMatches(item, extra) {
   return left === right || left.includes(right) || right.includes(left);
 }
 
+function isRipadoGroupItem(extra, name) {
+  return comparableText(extra?.group) === comparableText(ripadoExtraGroup) &&
+    comparableItemText(extra?.item || extra?.label || extra?.name || extra?.reference) === comparableItemText(name);
+}
+
+function isRipadoExtra(extra) {
+  return isRipadoGroupItem(extra, ripadoItemName);
+}
+
+function isPillowEffectExtra(extra) {
+  return isRipadoGroupItem(extra, pillowEffectItemName);
+}
+
+function ripadoUnitFactor(quantity) {
+  return quantity >= ripadoVolumeQuantity ? ripadoVolumeFactor : 1;
+}
+
+function ensureRipadoCatalogItem() {
+  catalog.extras = Array.isArray(catalog.extras) ? catalog.extras : [];
+  [[ripadoItemName, ripadoDefaultClientPrice], [pillowEffectItemName, 0], [roundsItemName, roundsDefaultClientPrice]].forEach(([name, client]) => {
+    if (catalog.extras.some(item => isRipadoGroupItem(item, name))) return;
+    catalog.extras.push({
+      group: ripadoExtraGroup,
+      item: name,
+      label: name,
+      name,
+      reference: name,
+      supplier: '',
+      supplierPrice: 0,
+      cost: 0,
+      client,
+      reseller: client
+    });
+  });
+}
+
+function findCatalogExtraForQuote(extra) {
+  const direct = (catalog.extras || []).find(item => catalogExtraMatches(item, extra));
+  if (direct) return direct;
+  if (normalizeExtraGroupName(extra?.group) !== 'Sistema de abertura') return null;
+  const wanted = comparableItemText(extra?.item || extra?.label || extra?.name || extra?.reference);
+  if (!wanted) return null;
+  return (catalog.doorSystems || []).find(item => {
+    const candidate = comparableItemText(item?.name || item?.item || item?.label || item?.reference);
+    return candidate && (candidate === wanted || candidate.includes(wanted) || wanted.includes(candidate));
+  }) || null;
+}
+
 function isSkirtingExtra(extra) {
   return comparableText(extra?.group).includes('RODAP');
 }
@@ -548,8 +935,29 @@ function isLacqueredExtra(extra) {
   return extra?.lacquered === true || extra?.lacquered === 'Sim';
 }
 
+function drawerUsesWardrobeType(extra) {
+  const wanted = comparableItemText(extra?.item || extra?.label || extra?.name || extra?.reference);
+  const drawerCatalog = (catalog.extras || []).filter(item => comparableText(item.group) === comparableText('Gavetas'));
+  const catalogItem = drawerCatalog.find(item =>
+    comparableItemText(item.item || item.label || item.name || item.reference) === wanted
+  ) || findCatalogExtraForQuote(extra);
+  if (catalogItem) {
+    const declaredUse = comparableText([catalogItem.handleUse, catalogItem.tipo].filter(Boolean).join(' '));
+    if (declaredUse.includes('COZINHA')) return false;
+    if (declaredUse.includes('ROUPEIRO')) return true;
+    const family = comparableText(catalogItem.family || '');
+    if (family.includes('COZINHA')) return false;
+    if (family.includes('ROUPEIRO')) return true;
+    return comparableText([catalogItem.item, catalogItem.label, catalogItem.name, catalogItem.reference].join(' ')).includes('ROUPEIRO');
+  }
+  if (!wanted) return false;
+  return comparableText([extra?.tipo, extra?.handleUse, extra?.family, extra?.item].filter(Boolean).join(' ')).includes('ROUPEIRO');
+}
+
 function isWardrobeDrawerExtra(extra) {
-  return comparableText(extra?.group) === comparableText(wardrobeDrawerGroup);
+  if (comparableText(extra?.group) === comparableText(wardrobeDrawerGroup)) return true;
+  if (normalizeExtraGroupName(extra?.group) !== 'Gavetas') return false;
+  return drawerUsesWardrobeType(extra);
 }
 
 function isWardrobeRodExtra(extra, catalogItem) {
@@ -642,13 +1050,71 @@ function updatePlatePrices(plate, changes) {
   if (Number.isFinite(Number(changes.supplierPrice))) plate.supplierPrice = Math.max(0, Number(changes.supplierPrice));
   if (changes.manualClient !== undefined) plate.manualClient = changes.manualClient === true;
   if (changes.manualReseller !== undefined) plate.manualReseller = changes.manualReseller === true;
-  plate.cost = plate.supplierPrice + platePricingRules.labor;
+  plate.cost = plateCostPerSquareMeter(plate.supplierPrice, costItems, platePricingRules.labor);
+  const automaticClient = plate.cost * customPlateClientMultiplier;
   plate.client = plate.manualClient === true && Number.isFinite(Number(changes.client))
     ? Number(changes.client)
-    : plate.cost * platePricingRules.clientMultiplier;
+    : automaticClient;
   plate.reseller = plate.manualReseller === true && Number.isFinite(Number(changes.reseller))
     ? Number(changes.reseller)
-    : plate.cost * platePricingRules.resellerMultiplier;
+    : plate.cost * customPlateResellerMultiplier;
+}
+
+function updateEdgeLaborCost(edge) {
+  if (!edge) return;
+  const meters = Number(edge.supplierMeters) || 1000;
+  const supplierPrice = Number(edge.supplierPrice) || 0;
+  edge.materialPerMeter = meters ? supplierPrice / meters : 0;
+  edge.cost = edge.materialPerMeter + laborPrices.edges;
+}
+
+function recalculateCatalogLaborCosts() {
+  (catalog.plates || []).forEach((plate) => {
+    const client = Number(plate.client) || 0;
+    const reseller = Number(plate.reseller) || 0;
+    const supplierPrice = Number(plate.supplierPrice) || 0;
+    const previousCost = supplierPrice + platePricingRules.labor;
+    const saw = costItemNamed(costItems, 'seccionadora');
+    const sawRate = panelSawCostPerSquareMeter(costItems);
+    const assemblyLaborRate = moduleAssemblyLaborPerSquareMeter(costItems);
+    const previousSaleBase = supplierPrice + (sawRate ?? 0) + assemblyLaborRate;
+    plate.cost = plateCostPerSquareMeter(supplierPrice, costItems, platePricingRules.labor);
+    // Older Supabase tables do not have manual-price flag columns. If the
+    // stored sale price differs from the automatic formula, preserve it as a
+    // manual value instead of silently replacing it on every refresh.
+    const automaticClient = plate.cost * customPlateClientMultiplier;
+    const automaticReseller = plate.cost * customPlateResellerMultiplier;
+    const previousAutomaticClient = previousSaleBase * customPlateClientMultiplier;
+    const previousAutomaticReseller = previousSaleBase * previousCustomPlateResellerMultiplier;
+    const olderAutomaticClient = saw
+      ? supplierPrice * platePricingRules.clientMultiplier + (Number(saw.client) || 0)
+      : previousCost * platePricingRules.clientMultiplier;
+    const olderAutomaticReseller = previousCost * platePricingRules.resellerMultiplier;
+    const legacyCost = supplierPrice + laborPrices.plates;
+    const legacyAutomaticClient = legacyCost * platePricingRules.clientMultiplier;
+    const legacyAutomaticReseller = legacyCost * platePricingRules.resellerMultiplier;
+    const legacyManualClient = plate.manualClient == null && client > 0 &&
+      Math.abs(client - automaticClient) > 0.005 &&
+      Math.abs(client - previousAutomaticClient) > 0.005 &&
+      Math.abs(client - olderAutomaticClient) > 0.005 &&
+      Math.abs(client - legacyAutomaticClient) > 0.005;
+    const legacyManualReseller = plate.manualReseller == null && reseller > 0 &&
+      Math.abs(reseller - automaticReseller) > 0.005 &&
+      Math.abs(reseller - previousAutomaticReseller) > 0.005 &&
+      Math.abs(reseller - olderAutomaticReseller) > 0.005 &&
+      Math.abs(reseller - legacyAutomaticReseller) > 0.005;
+    const manualClient = plate.manualClient === true || legacyManualClient;
+    const manualReseller = plate.manualReseller === true || legacyManualReseller;
+    plate.manualClient = manualClient;
+    plate.manualReseller = manualReseller;
+    if (!manualClient) plate.client = automaticClient;
+    else plate.client = client;
+    if (!manualReseller) plate.reseller = automaticReseller;
+    else plate.reseller = reseller;
+  });
+  (catalog.edges || []).forEach(updateEdgeLaborCost);
+  normalizeDrawerRunnerExtras();
+  recalculateInternationalPackagingPrices();
 }
 
 function cleanSupplierItem(item) {
@@ -673,6 +1139,9 @@ function supplierChangeKey(item, nameField) {
     identityName,
     item?.group,
     item?.family,
+    item?.usedIn,
+    item?.parentId,
+    item?.__supplierLocalId,
     item?.supplier,
     item?.reference
   ].map(comparableText).filter(Boolean).join('|');
@@ -737,6 +1206,31 @@ function upsertCatalogItemsByName(list, items, nameField) {
 
 function applySupplierPayload(payload) {
   if (!payload || typeof payload !== 'object') return;
+  if (payload.laborPrices && typeof payload.laborPrices === 'object') {
+    laborPrices = normalizeLaborPrices({ ...laborPrices, ...payload.laborPrices });
+  }
+  if (Array.isArray(payload.costs)) {
+    const mergedCosts = costItems.map(item => ({ ...item }));
+    payload.costs.forEach(change => {
+      const changeId = String(change?.id || '');
+      const changeName = normalizedCostItemName(change?.name);
+      const changeType = String(change?.type || 'ambos');
+      const index = mergedCosts.findIndex(item => changeId
+        ? String(item.id || '') === changeId
+        : normalizedCostItemName(item.name) === changeName && String(item.type || 'ambos') === changeType);
+      if (change?.__delete === true) {
+        if (index >= 0) mergedCosts.splice(index, 1);
+      } else if (index >= 0) {
+        Object.assign(mergedCosts[index], change);
+      } else {
+        mergedCosts.push({ ...change });
+      }
+    });
+    costItems = ensureDrawerAssemblyCostItems(calculateCustomCostPrices(mergedCosts));
+    syncEdgeLaborFromEdgebander();
+    syncDrawerLaborFromCostItems();
+  }
+  syncPanelSawPlatePricing();
   removeCatalogItems(catalog.plates, (payload.plates || []).filter(item => item?.__delete === true));
   removeCatalogItems(catalog.paintings, (payload.paintings || []).filter(item => item?.__delete === true));
   removeCatalogItems(catalog.paintingComponents, (payload.paintingComponents || []).filter(item => item?.__delete === true));
@@ -746,6 +1240,7 @@ function applySupplierPayload(payload) {
   removeCatalogItems(catalog.drawerComponents, (payload.drawerComponents || []).filter(item => item?.__delete === true));
   removeCatalogItems(catalog.hingeComponents, (payload.hingeComponents || []).filter(item => item?.__delete === true));
   removeCatalogItems(catalog.openingSystemComponents, (payload.openingSystemComponents || []).filter(item => item?.__delete === true));
+  removeCatalogItems(catalog.doorSystems, (payload.doorSystems || []).filter(item => item?.__delete === true));
   if (Array.isArray(payload.plates)) {
     payload.plates.forEach((change) => {
       if (change?.__delete === true) return;
@@ -770,8 +1265,10 @@ function applySupplierPayload(payload) {
   }
   (payload.extras || []).forEach(item => { item.group = normalizeExtraGroupName(item.group); });
   upsertCatalogItems(catalog.paintings, payload.paintings, 'name');
+  syncPaintingServiceCosts();
   upsertCatalogItems(catalog.paintingComponents, payload.paintingComponents, 'item');
   upsertCatalogItems(catalog.edges, payload.edges, 'name');
+  if (payload.laborPrices || Array.isArray(payload.edges)) (catalog.edges || []).forEach(updateEdgeLaborCost);
   upsertCatalogItems(catalog.extras, payload.extras, 'item');
   catalog.extras.forEach(item => {
     if (normalizeExtraGroupName(item.group) === 'Puxadores' && item.priceUnit === 'cm') {
@@ -783,6 +1280,7 @@ function applySupplierPayload(payload) {
     }
   });
   upsertCatalogItems(catalog.hinges, (payload.hinges || []).filter(item => !badHingeSummary(item)), 'name');
+  upsertCatalogItems(catalog.doorSystems, payload.doorSystems, 'name');
   upsertCatalogItemsByName(catalog.doorSystems, (payload.extras || [])
     .filter(item => comparableText(item.group) === comparableText('Sistema de abertura de portas') || comparableText(item.group) === comparableText('Sistema de abertura'))
     .map(item => ({
@@ -803,7 +1301,7 @@ function applySupplierPayload(payload) {
   upsertCatalogItems(catalog.drawerComponents, payload.drawerComponents, 'item');
   upsertCatalogItems(catalog.hingeComponents, payload.hingeComponents, 'item');
   upsertCatalogItems(catalog.openingSystemComponents, (payload.openingSystemComponents || []).filter(item => !item.userAddedSummary), 'item');
-  upsertCatalogItemsByName(catalog.doorSystems, (payload.openingSystemComponents || []).filter(item => item.userAddedSummary || item.name).map(item => ({
+  upsertCatalogItemsByName(catalog.doorSystems, (payload.openingSystemComponents || []).filter(item => item.userAddedSummary === true).map(item => ({
     name: item.name || item.item || item.label,
     item: item.name || item.item || item.label,
     label: item.name || item.item || item.label,
@@ -818,12 +1316,17 @@ function applySupplierPayload(payload) {
     manualReseller: item.manualReseller,
     userAdded: item.userAdded
   })), 'name');
+  markDoorSystemDuplicates(catalog.doorSystems);
+  recalculateInternationalPackagingPrices();
 }
 
 function supplierPricePayload() {
   return {
-    rules: platePricingRules,
-    plates: catalog.plates.map(item => ({ ...item }))
+    rules: { ...platePricingRules, edgeLabor: laborPrices.edges, drawerLabor: drawerAssemblyCost('cozinha'), wardrobeDrawerLabor: drawerAssemblyCost('roupeiro') },
+    laborPrices: { ...laborPrices },
+    plates: catalog.plates.map(item => ({ ...item })),
+    paintings: catalog.paintings.map(item => ({ ...item })),
+    costs: costItems.map(item => ({ ...item }))
   };
 }
 
@@ -1014,7 +1517,12 @@ const quoteSeed = {
   lists
 };
 
-quoteSeed.modules = enrichModules(quoteSeed.modules);
+// A base nova deve começar sem o orçamento de demonstração antigo.  Os dados
+// de exemplo continham materiais que podem não existir no catálogo atual e
+// acabavam por gerar avisos como "madeira interior sem preço encontrado".
+quoteSeed.modules = [];
+quoteSeed.extras = [];
+quoteSeed.client = { name: '', location: '', date: '' };
 quoteSeed.typePresets = typePresets;
 quoteSeed.catalog = catalog;
 
@@ -1025,7 +1533,13 @@ function money(value) {
 function mergeCatalogPrices(target, incoming, matcher) {
   if (!Array.isArray(target) || !Array.isArray(incoming)) return;
   incoming.forEach(source => {
-    const item = target.find(candidate => matcher(candidate, source));
+    // A new user-added row must stay independent even when its reference or
+    // material code is equal to an existing row. Existing rows are matched by
+    // ID first, then by the legacy matcher used for old overrides.
+    const isNewUserItem = source?.userAdded === true && !source?.catalogId;
+    const item = source?.catalogId
+      ? target.find(candidate => candidate.catalogId === source.catalogId)
+      : (isNewUserItem ? null : target.find(candidate => matcher(candidate, source)));
     if (!item) {
       if (source.userAdded === true) target.push({ ...source });
       return;
@@ -1077,6 +1591,7 @@ const knownDrawerRunnerRatios = [
 ];
 
 function drawerRunnerKnownEntry(value) {
+  return null;
   const text = comparableText(value).replace(/[^A-Z0-9]+/g, ' ');
   return knownDrawerRunnerRatios.find(entry => {
     const keyParts = entry.key.split(/\s+/).filter(Boolean);
@@ -1097,14 +1612,58 @@ function uniqueDrawerComponentsForFamily(family) {
   });
 }
 
+function drawerRecipeLabel(recipe) {
+  const type = comparableText(recipe?.type);
+  const family = comparableText(recipe?.family);
+  const kind = type.includes('GAVETAO') ? 'GAVETAO' : 'GAVETA';
+  const place = type.includes('INTERIOR') ? 'INTERIOR' : 'EXTERIOR';
+  let familyName = '';
+  if (family.includes('ANTARO')) familyName = 'ANTARO';
+  if (family.includes('MERIVOBOX')) familyName = 'MERIVOBOX';
+  if (family.includes('LEGRABOX')) familyName = 'LEGRABOX';
+  return [kind, familyName, place].join(' ');
+}
+
+function drawerComponentSupplierCost(component) {
+  const supplierPrice = Number(component?.supplierPrice);
+  return Number.isFinite(supplierPrice) ? supplierPrice : (Number(component?.cost) || 0);
+}
+
+function drawerSupplierCost(item) {
+  const itemKey = comparableItemText(item?.item || item?.label || item?.name || item?.reference);
+  if (!itemKey) return null;
+  const recipe = (catalog.drawerRecipes || []).find(candidate => drawerRecipeLabel(candidate) === itemKey);
+  const components = recipe
+    ? (recipe.components || []).map(recipeComponent => (catalog.drawerComponents || []).find(component =>
+      comparableItemText(component.item || component.label || component.name || component.reference) === comparableItemText(recipeComponent.item) &&
+      comparableText(component.supplier) === comparableText(recipeComponent.supplier)
+    )).filter(Boolean)
+    : uniqueDrawerComponentsForFamily(item.item || item.label || item.name || item.reference);
+  if (!components.length) return null;
+  const componentCost = recipe
+    ? (recipe.components || []).reduce((sum, recipeComponent) => {
+      const component = (catalog.drawerComponents || []).find(candidate =>
+        comparableItemText(candidate.item || candidate.label || candidate.name || candidate.reference) === comparableItemText(recipeComponent.item) &&
+        comparableText(candidate.supplier) === comparableText(recipeComponent.supplier)
+      );
+      return sum + drawerComponentSupplierCost(component) * (Number(recipeComponent.quantity) || 0);
+    }, 0)
+    : components.reduce((sum, component) => sum + drawerComponentSupplierCost(component), 0);
+  const assemblyType = isWardrobeDrawerExtra(item) ? 'roupeiro' : 'cozinha';
+  return (Number(item.supplierPrice) || 0) + componentCost + (components.length ? drawerAssemblyCost(assemblyType) : 0);
+}
+
 function normalizeDrawerRunnerExtras() {
   const drawerExtras = (catalog.extras || []).filter(item => comparableText(item.group) === comparableText('Gavetas'));
   drawerExtras.forEach(item => {
+    const supplierCost = drawerSupplierCost(item);
+    if (supplierCost !== null) item.cost = supplierCost;
     const known = drawerRunnerKnownEntry([item.item, item.label, item.name, item.reference].join(' '));
     if (!known) return;
     const components = uniqueDrawerComponentsForFamily(item.item || item.reference);
     const componentCost = money(components.reduce((sum, component) => sum + (Number(component.cost ?? component.supplierPrice) || 0), 0));
-    const cost = componentCost || known.cost;
+    const assemblyType = isWardrobeDrawerExtra(item) ? 'roupeiro' : 'cozinha';
+    const cost = (componentCost || known.cost) + (components.length ? drawerAssemblyCost(assemblyType) : 0);
     const ratio = known.cost ? known.client / known.cost : 1.7;
     item.cost = money(cost);
     if (item.manualClient !== true) item.client = cost * ratio;
@@ -1116,12 +1675,22 @@ function applyCatalogOverrides(overrides) {
   if (!overrides || typeof overrides !== 'object') return;
   mergeCatalogPrices(catalog.plates, overrides.plates, sameMaterialPrice);
   mergeCatalogPrices(catalog.paintings, overrides.paintings, (item, source) => item.name === source.name);
+  if (Array.isArray(overrides.costs)) {
+    costItems = ensureDrawerAssemblyCostItems(calculateCustomCostPrices(overrides.costs));
+    syncDrawerLaborFromCostItems();
+    syncEdgeLaborFromEdgebander();
+    syncPanelSawPlatePricing();
+    recalculateCatalogLaborCosts();
+  }
+  const calculationCosts = costItems;
+  syncPaintingServiceCosts(catalog.paintings, calculationCosts);
   mergeCatalogPrices(catalog.edges, overrides.edges, (item, source) => item.name === source.name);
   mergeCatalogPrices(catalog.doorSystems, overrides.doorSystems, (item, source) => item.name === source.name);
   mergeCatalogPrices(catalog.hinges, overrides.hinges, (item, source) => item.name === source.name);
   mergeCatalogPrices(catalog.extras, overrides.extras, catalogExtraMatches);
   mergeCatalogPrices(catalog.drawerComponents, overrides.drawerComponents, (item, source) => comparableItemText(item.item || item.reference) === comparableItemText(source.item || source.reference));
   normalizeDrawerRunnerExtras();
+  recalculateInternationalPackagingPrices();
 }
 
 function findMaterialForAudit(value) {
@@ -1154,6 +1723,20 @@ function drawerMaterialLine(materialName, areaM2, sellKey) {
   };
 }
 
+function drawerPaintLine(paintName, areaM2, sellKey) {
+  const wanted = comparableText(paintName || 'Nenhuma');
+  if (!wanted || wanted === 'NENHUMA' || areaM2 <= 0) return { cost: 0, client: 0 };
+  const paint = (catalog.paintings || []).find(item => comparableText(item.name) === wanted);
+  if (!paint) return { cost: 0, client: 0 };
+  const saleValue = paint[sellKey] !== undefined && paint[sellKey] !== null
+    ? Number(paint[sellKey])
+    : Number(paint.client) || 0;
+  return {
+    cost: areaM2 * ((Number(paint.cost) || 0) + (Number(paint.serviceCostPerM2) || 0)),
+    client: areaM2 * (Number.isFinite(saleValue) ? saleValue : 0)
+  };
+}
+
 function materialThicknessCm(materialName) {
   const plate = findMaterialForAudit(materialName);
   const text = [materialName, plate?.name, plate?.reference, plate?.comparisonKey].filter(Boolean).join(' ');
@@ -1182,12 +1765,18 @@ function calculateWardrobeDrawerUnit(extra, pricingMode, measures) {
   const baseArea = bottomArea + sideArea + backArea;
   const baseLine = drawerMaterialLine(baseMaterial, baseArea, sellKey);
   const frontLine = drawerMaterialLine(frontMaterial, frontArea, sellKey);
+  const interiorPaint = extra.drawerPaintInterior || extra.paintInterior || 'Nenhuma';
+  const exteriorPaint = extra.drawerPaintExterior || extra.paintDoor || 'Nenhuma';
+  const basePaint = drawerPaintLine(useExteriorAll ? exteriorPaint : interiorPaint, baseArea, sellKey);
+  const frontPaint = drawerPaintLine(useExteriorFront ? exteriorPaint : interiorPaint, frontArea, sellKey);
   const runner = findDrawerRunner(extra.drawerRunner);
   const runnerCost = Number(runner?.cost ?? runner?.supplierPrice) || 0;
-  const unitCost = money(baseLine.cost + frontLine.cost + runnerCost);
-  const automaticMargin = pricingMode === 'reseller' ? 1.35 : 1.7;
-  const automaticClient = unitCost ? unitCost * automaticMargin : baseLine.client + frontLine.client;
-  const unitClient = money(automaticClient);
+  const runnerSaleValue = runner?.[sellKey];
+  const runnerSalePrice = runnerSaleValue !== undefined && runnerSaleValue !== null && Number.isFinite(Number(runnerSaleValue))
+    ? Number(runnerSaleValue)
+    : (Number(runner?.client) || 0);
+  const unitCost = money(baseLine.cost + frontLine.cost + basePaint.cost + frontPaint.cost + runnerCost + drawerAssemblyCost('roupeiro'));
+  const unitClient = money(baseLine.client + frontLine.client + basePaint.client + frontPaint.client + runnerSalePrice);
   return {
     unitCost,
     unitClient,
@@ -1221,11 +1810,12 @@ function calculateWardrobeDrawerExtra(extra, pricingMode) {
 
 function quoteWarnings(modules, extras) {
   const warnings = [];
+  const hasPlates = Array.isArray(catalog.plates) && catalog.plates.length > 0;
   modules.forEach((module, index) => {
     if (module.blank || !String(module.type || '').trim()) return;
     const type = workbookData.inferType(module);
     const piecePlate = type === 'Peças/Placa' || type === 'PeÃ§as/Placa' || type === 'PeÃƒÂ§as/Placa';
-    if (!String(module.interior || '').trim()) {
+    if (!String(module.interior || '').trim() && hasPlates) {
       warnings.push(`Módulo ${index + 1}: falta madeira interior.`);
     } else if (!findMaterialForAudit(module.interior)) {
       warnings.push(`Módulo ${index + 1}: madeira interior sem preço encontrado (${module.interior}).`);
@@ -1250,7 +1840,7 @@ function quoteWarnings(modules, extras) {
       Number(extra.totalClient) ||
       Number(extra.totalCost)
     ) return;
-    if (!catalog.extras.find(item => catalogExtraMatches(item, extra))) {
+    if (!findCatalogExtraForQuote(extra)) {
       warnings.push(`Extra ${index + 1}: item sem preço encontrado (${extra.group} / ${extra.item || 'sem item'}).`);
     }
   });
@@ -1258,7 +1848,7 @@ function quoteWarnings(modules, extras) {
 }
 
 function calculateQuoteInternal(payload) {
-  applyCatalogOverrides(payload.catalog);
+  applyCatalogOverrides(payload.catalog || {});
   const client = payload.client || quoteSeed.client;
   const pricingMode = payload.pricingMode === 'reseller' ? 'reseller' : 'normal';
   const modules = Array.isArray(payload.modules) ? payload.modules : quoteSeed.modules;
@@ -1286,16 +1876,22 @@ function calculateQuoteInternal(payload) {
     const blankExtra = !String(extra.group || '').trim() || !String(extra.item || '').trim();
     const wardrobeDrawer = !blankExtra && isWardrobeDrawerExtra(extra) ? calculateWardrobeDrawerExtra(extra, pricingMode) : null;
     const manualPricedExtra = !blankExtra && isManualPricedExtra(extra);
-    const catalogItem = blankExtra || manualPricedExtra ? null : catalog.extras.find(item => catalogExtraMatches(item, extra));
+    const catalogItem = blankExtra || manualPricedExtra ? null : findCatalogExtraForQuote(extra);
     const lacquerClient = isSkirtingExtra(extra) && isLacqueredExtra(extra) ? skirtingLacquerClientPerMeter : 0;
     const handleCm = normalizeExtraGroupName(extra.group) === 'Puxadores' && catalogItem?.priceUnit === 'cm';
     const baseExtraClient = handleCm ? (Number(catalogItem.client) || 0) : catalogItem
       ? (pricingMode === 'reseller' ? (Number(catalogItem.reseller) || Number(catalogItem.client) || 0) : (Number(catalogItem.client) || 0))
       : (Number(extra.unitClient) || 0);
     const baseExtraCost = handleCm ? 0 : catalogItem ? (Number(catalogItem.cost) || 0) : (Number(extra.unitCost) || 0);
+    const internationalPackaging = !blankExtra && normalizeExtraGroupName(extra.group) === transportExtraGroup && isInternationalPackagingItem(extra) && Boolean(catalogItem);
+    const internationalCost = internationalPackaging ? internationalPackagingInternalCost(catalogItem) : 0;
     const rodLine = !blankExtra && !wardrobeDrawer ? wardrobeRodLine(extra, catalogItem, baseExtraClient, baseExtraCost) : null;
-    const unitClient = blankExtra ? 0 : (wardrobeDrawer ? wardrobeDrawer.unitClient : (rodLine ? rodLine.unitClient : (baseExtraClient + lacquerClient)));
-    const unitCost = blankExtra ? 0 : (wardrobeDrawer ? wardrobeDrawer.unitCost : (rodLine ? rodLine.unitCost : baseExtraCost));
+    const ripadoFactor = !blankExtra && isRipadoExtra(extra) ? ripadoUnitFactor(quantity) : 1;
+    const pillowModule = !blankExtra && isPillowEffectExtra(extra)
+      ? moduleLines.find(line => line.id && String(line.id) === String(extra.targetModuleId || ''))
+      : null;
+    const unitClient = blankExtra ? 0 : isPillowEffectExtra(extra) ? money((Number(pillowModule?.unitClient) || 0) * pillowEffectModuleFactor) : (wardrobeDrawer ? wardrobeDrawer.unitClient : internationalPackaging ? internationalCost * internationalPackagingClientMultiplier : (rodLine ? rodLine.unitClient : (baseExtraClient * ripadoFactor + lacquerClient)));
+    const unitCost = blankExtra ? 0 : (wardrobeDrawer ? wardrobeDrawer.unitCost : internationalPackaging ? internationalCost : (rodLine ? rodLine.unitCost : baseExtraCost));
     const totalClient = wardrobeDrawer && wardrobeDrawer.totalClient !== undefined ? wardrobeDrawer.totalClient : money(quantity * unitClient);
     const totalCost = wardrobeDrawer && wardrobeDrawer.totalCost !== undefined ? wardrobeDrawer.totalCost : money(quantity * unitCost);
     return {
@@ -1320,10 +1916,14 @@ function calculateQuoteInternal(payload) {
 
 function calculateQuote(payload) {
   const before = structuredClone(catalog);
+  const costsBefore = costItems;
+  const laborBefore = laborPrices;
   try { return calculateQuoteInternal(payload); }
   finally {
     for (const key of Object.keys(catalog)) delete catalog[key];
     Object.assign(catalog, before);
+    costItems = costsBefore;
+    laborPrices = laborBefore;
   }
 }
 
@@ -1353,10 +1953,11 @@ app.post('/api/login', async (req, res) => {
   try {
     let profile;
     if (useSupabaseAuth) {
-      if (allowBootstrapAdmin && username === adminUser && password === adminPassword) {
-        profile = { username, name: adminUser, role: 'admin' };
-      } else {
+      try {
         profile = await loginWithSupabase(username, password);
+      } catch (error) {
+        if (!allowBootstrapAdmin || username !== adminUser || password !== adminPassword) throw error;
+        profile = { username, name: adminUser, role: 'admin' };
       }
     } else {
       if (username !== adminUser || password !== adminPassword) {
@@ -1383,7 +1984,7 @@ app.post('/api/logout', (req, res) => {
 
 app.get('/api/quote-history', requireAuth, async (req, res) => {
   try {
-    const entries = await quoteHistoryForSession(req.authSession, req.query.userId);
+    const entries = await quoteHistoryForSession(req.authSession, req.query.userId, req.query.q);
     res.json({ entries });
   } catch (error) {
     res.status(400).json({ entries: [], error: error.message });
@@ -1453,12 +2054,17 @@ app.put('/api/supplier-prices', requireAdmin, async (req, res) => {
     'paintingComponents',
     'edges',
     'extras',
+    'doorSystems',
     'drawerComponents',
     'hinges',
     'hingeComponents',
-    'openingSystemComponents'
+    'openingSystemComponents',
+    'laborPrices',
+    'costs'
   ];
-  const hasChanges = changedKeys.some((key) => Array.isArray(req.body?.[key]) && req.body[key].length);
+  const hasChanges = changedKeys.some((key) => Array.isArray(req.body?.[key]) && req.body[key].length) ||
+    (req.body?.laborPrices && typeof req.body.laborPrices === 'object') ||
+    (Array.isArray(req.body?.costs) && req.body.costs.length > 0);
   if (!hasChanges) return res.status(400).json({ error: 'NÃ£o existem preÃ§os para guardar.' });
 
   try {
@@ -1483,8 +2089,18 @@ app.post('/api/supplier-prices/plate', requireAdmin, async (req, res) => {
 
 app.delete('/api/supplier-prices/item', requireAdmin, async (req, res) => {
   try {
-    const result = await deleteSupplierCatalogItem(String(req.body?.type || ''), req.body?.index, req.body?.catalogId);
+    const result = await deleteSupplierCatalogItem(String(req.body?.type || ''), req.body?.index, req.body?.catalogId, req.body?.reference);
     res.json({ ...supplierPricePayload(), saved: result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/supplier-prices/cost', requireAdmin, async (req, res) => {
+  try {
+    const result = await catalogStore.deleteCostItem(req.body?.id);
+    installCatalog(result);
+    res.json({ ...supplierPricePayload(), saved: { updated: 1, storage: catalogStore.mode } });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

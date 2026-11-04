@@ -39,13 +39,13 @@ Notas:
 No Supabase, abre o SQL Editor e executa:
 
 ```text
-supabase/schema.sql
 supabase/catalog.sql
+supabase/20261026_add_user_active.sql
 ```
 
 Isto cria:
 
-- `profiles`, com `role` e `active`.
+- a coluna `active` em `utilizador`, usada para ativar/desativar contas.
 - `quote_history`, associado ao utilizador dono do orcamento.
 - tabelas separadas do catálogo, como `catalog_plates`, `catalog_edges`, `catalog_extras` e as tabelas de receitas/componentes.
 

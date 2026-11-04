@@ -7,6 +7,8 @@
     const match = name.match(/(\d+(?:[.,]\d+)?)\s*W\b/);
     return match ? Number(match[1].replace(',', '.')) : 0;
   }
+  const wattsPerMeter = 10.5;
+  const safetyMargin = 1.2;
   function arrange(extras, catalog) {
     const lines = extras.filter(item => !item.autoLedTransformer);
     const warnings = [];
@@ -23,15 +25,23 @@
     });
     const options = catalog.map(item => ({ item, watts: watts(item) })).filter(option => option.watts > 0).sort((a, b) => a.watts - b.watts);
     loads.forEach((meters, key) => {
-      const required = Math.round(meters * 10.5 * 1e8) / 1e8;
-      const provided = lines.some(extra => (extra.furnitureGroupId || '') === key && Number(extra.quantity) >= 1 && watts(find(extra) || extra) >= required);
-      if (provided) return;
-      const option = options.find(candidate => candidate.watts >= required);
-      if (!option) {
-        warnings.push('LED: ' + meters + ' m precisam de ' + required + ' W. Nao existe transformador com potencia suficiente no catalogo.');
+      // Potencia: metros x 10,5 W/m x 1,20 de margem de seguranca.
+      const required = Math.round(meters * wattsPerMeter * safetyMargin * 100) / 100;
+      const provided = lines
+        .filter(extra => (extra.furnitureGroupId || '') === key)
+        .reduce((sum, extra) => sum + watts(find(extra) || extra) * (Number(extra.quantity) || 0), 0);
+      if (provided >= required) return;
+      if (!options.length) {
+        warnings.push('LED: ' + meters + ' m precisam de ' + required + ' W. Nao existe nenhum transformador no catalogo.');
         return;
       }
-      lines.push({ id: 'led-transformer:' + key, autoLedTransformer: true, furnitureGroupId: key, group: option.item.group, item: option.item.item, catalogId: option.item.catalogId, quantity: 1, ledMeters: meters, ledRequiredWatts: required });
+      // Nenhum transformador pode passar da potencia maxima do catalogo: a carga
+      // e dividida em partes iguais pelo menor numero de transformadores possivel.
+      const largest = options[options.length - 1].watts;
+      const count = Math.max(1, Math.ceil(required / largest - 1e-9));
+      const perTransformer = required / count;
+      const option = options.find(candidate => candidate.watts >= perTransformer - 1e-9);
+      lines.push({ id: 'led-transformer:' + key, autoLedTransformer: true, furnitureGroupId: key, group: option.item.group, item: option.item.item, catalogId: option.item.catalogId, quantity: count, ledMeters: meters, ledRequiredWatts: required });
     });
     return { extras: lines, warnings };
   }

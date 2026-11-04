@@ -8,11 +8,12 @@ Executa npm install e npm start. Abre http://localhost:3000. Configura as creden
 
 ## Supabase
 
-1. Executa supabase/schema.sql para utilizadores e histórico, se ainda não estiver aplicado.
-2. Executa supabase/catalog.sql no SQL Editor para criar o catálogo.
-3. Configura SUPABASE_URL, SUPABASE_ANON_KEY e SUPABASE_SERVICE_ROLE_KEY em .env.
-4. Executa npm run migrate:supabase uma única vez.
-5. Define CATALOG_STORAGE=supabase e inicia/reinicia a aplicação.
+1. Usa as tabelas `utilizador`, `permissao` e `quote_history` da base Silwood.
+2. Executa `supabase/catalog.sql` no SQL Editor para criar o catálogo, se ainda não estiver aplicado.
+3. Configura SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY em .env. A SERVICE_ROLE fica apenas no servidor.
+4. Executa `supabase/20261026_add_user_active.sql` no SQL Editor para ativar/desativar utilizadores no painel.
+5. Executa npm run migrate:supabase uma única vez.
+6. Define CATALOG_STORAGE=supabase e inicia/reinicia a aplicação.
 
 A importação usa data/catalog-seed.json, já extraído do Excel do projeto com os preços guardados e alterações pendentes existentes na migração. Se existir data/catalog-local.json, importa esse catálogo atualizado. A importação recusa substituir um catálogo que já exista.
 

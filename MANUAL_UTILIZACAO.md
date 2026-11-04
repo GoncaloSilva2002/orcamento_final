@@ -190,14 +190,17 @@ Neste caso, preencher manualmente:
 
 ### Transporte e embalamento
 
-Este grupo serve para custos variáveis.
+Este grupo usa os preços da tabela `transporte_embalamento` quando o item
+escolhido existe no catálogo. Se for um transporte novo que não esteja na
+tabela, pode ser indicado manualmente no orçamento.
 
 Opções disponíveis:
 
 - Carga + Transporte + Embalamento.
 - Embalamento + Carga.
 
-O preço deve ser colocado manualmente no orçamento, porque varia de obra para obra.
+O custo e o preço cliente do item existente são assumidos automaticamente da
+tabela e podem ser alterados no catálogo de fornecedores.
 
 ## 7. Gavetas
 

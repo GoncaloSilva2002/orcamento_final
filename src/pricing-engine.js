@@ -1,11 +1,51 @@
 function createPricingEngine(data) {
-const { catalog, lists, typePresets, feetPrices } = data;
+const { catalog, lists, typePresets } = data;
+
+// O catálogo remoto pode não ter ainda a linha de metadados com os preços dos
+// pés. Sem estes valores um módulo inferior interrompe toda a API de cálculo
+// ao tentar ler `feetPrices.small.cost`.
+const defaultFeetPrices = {
+  small: { cost: 4.292, client: 10 },
+  large: { cost: 6.438, client: 14 }
+};
+const feetPrices = {
+  small: { ...defaultFeetPrices.small, ...(data.feetPrices?.small || {}) },
+  large: { ...defaultFeetPrices.large, ...(data.feetPrices?.large || {}) }
+};
 function sheetText(value) {
   return String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase();
 }
+const kitchenFeetPrice = (Array.isArray(data.costs) ? data.costs : []).find(item =>
+  sheetText(item.name).includes('PES') && sheetText(item.type) === 'COZINHA'
+) || { cost: 0, client: 0 };
+const wardrobeFeetPrice = (Array.isArray(data.costs) ? data.costs : []).find(item =>
+  sheetText(item.name).includes('PES') && sheetText(item.type) === 'ROUPEIRO'
+) || { cost: 0, client: 0 };
+const kitchenLevelerPrice = (Array.isArray(data.costs) ? data.costs : []).find(item =>
+  sheetText(item.name).includes('NIVELADOR') && sheetText(item.type) === 'COZINHA'
+) || (Array.isArray(data.costs) ? data.costs : []).find(item =>
+  sheetText(item.name).includes('NIVELADOR') && sheetText(item.type) === 'AMBOS'
+) || { cost: 0, client: 0 };
+const cncCostItem = (Array.isArray(data.costs) ? data.costs : []).find(item =>
+  sheetText(item.name).includes('CNC')
+) || { cost: 0 };
+const hourlyLaborItem = (Array.isArray(data.costs) ? data.costs : []).find(item => {
+  const name = sheetText(item.name);
+  return name.includes('MAO') && name.includes('OBRA');
+}) || { cost: 0, client: 0 };
+const cncHourlyLaborCost = Number(hourlyLaborItem.cost) > 0
+  ? Number(hourlyLaborItem.cost)
+  : Number(hourlyLaborItem.client) || 0;
+const cncCostPerM2 = cncCostItem.name ? (cncHourlyLaborCost + (Number(cncCostItem.cost) || 0)) / 5.769 : 0;
+const cncClientPerM2 = cncCostPerM2 * 1.5;
+const moduleLaborHourlyCost = cncHourlyLaborCost;
+const feetInstallLaborCost = moduleLaborHourlyCost * (60 / 3600);
+const feetScrewCost = 0.06 * 4;
+const levelerInstallLaborCost = moduleLaborHourlyCost * (5 / 60);
+const levelerConsumablesCost = (0.06 * 2) * 2;
 
 function inferType(module) {
   if (lists.tipos.includes(module.type)) return module.type;
@@ -32,7 +72,7 @@ function pricingSnapshot(module) {
     exterior: module.exterior,
     paintDoor: module.paintDoor || 'Nenhuma',
     paintInterior: module.paintInterior || 'Nenhuma',
-    doorSystem: module.doorSystem || 'Normal',
+    doorSystem: module.doorSystem || '',
     hinge: module.hinge || 'DobradiÃ§a Standard (com mola)',
     edgeType: module.edgeType || 'Orla - Ã€ Cor',
     topBottomEdges: module.topBottomEdges || 'Sim',
@@ -72,8 +112,16 @@ function plateCodeThicknessKey(value) {
 }
 
 function findPlatePrice(name) {
+  const wanted = sheetText(name);
+  const matching = catalog.plates.filter(item => item.name === name || sheetText(item.name) === wanted);
+  if (matching.length) {
+    return matching.slice().sort((a, b) => {
+      const priceA = Number(a.supplierPrice ?? a.cost) || Infinity;
+      const priceB = Number(b.supplierPrice ?? b.cost) || Infinity;
+      return priceA - priceB;
+    })[0];
+  }
   const exact = findPrice(catalog.plates, name);
-  if (exact.name || exact.cost || exact.client || exact.reseller) return exact;
   const wantedKey = plateCodeThicknessKey(name);
   if (!wantedKey) return exact;
   return catalog.plates.find(item => {
@@ -145,6 +193,7 @@ function calculateModulePrice(module, pricingMode = 'normal') {
   if (hasExterior && !exterior.name && !exterior.cost && !exterior.client && !exterior.reseller) return { unitCost: 0, unitClient: 0 };
   const interiorPaint = !isPiecePlate ? findPrice(catalog.paintings, module.paintInterior || 'Nenhuma') : { cost: 0, client: 0 };
   const doorPaint = hasExterior || isPiecePlate ? findPrice(catalog.paintings, module.paintDoor || 'Nenhuma') : { cost: 0, client: 0 };
+  const paintingCostPerSquareMeter = paint => (Number(paint.cost) || 0) + (Number(paint.serviceCostPerM2) || 0);
   const selectedEdge = findPrice(catalog.edges, module.edgeType || 'Orla - Ã€ Cor');
   const edge = isPiecePlate || /sem orla/i.test(module.edgeType || '')
     ? { cost: 0, client: 0 }
@@ -207,25 +256,38 @@ function calculateModulePrice(module, pricingMode = 'normal') {
   ) / 100;
 
   const plateArea = uprightArea + topBottomArea + shelfArea + backArea + dividerArea + drawerBottomArea;
-  const feet = calculationType === 'Superior' || isPiecePlate
-    ? { cost: 0, client: 0 }
-    : (w < 80 ? feetPrices.small : feetPrices.large);
+  // Inferiores, Colunas e Roupeiros (calculados como Coluna) levam pés.
+  const feetCount = calculationType === 'Inferior' || calculationType === 'Coluna' ? (w > 60 ? 6 : 4) : 0;
+  const feetPrice = type === 'Roupeiro' ? wardrobeFeetPrice : kitchenFeetPrice;
+  const feet = {
+    cost: ((Number(feetPrice.cost) || 0) + (feetPrice.name ? feetInstallLaborCost + feetScrewCost : 0)) * feetCount,
+    client: (Number(feetPrice.client) || 0) * feetCount
+  };
+  const levelerSetCount = calculationType === 'Superior' ? 1 : 0;
+  const levelers = {
+    cost: ((Number(kitchenLevelerPrice.cost) || 0) * 2 + (kitchenLevelerPrice.name ? levelerInstallLaborCost + levelerConsumablesCost : 0)) * levelerSetCount,
+    client: (Number(kitchenLevelerPrice.client) || 0) * levelerSetCount
+  };
 
   const cabinetCost =
     plateArea * interior.cost +
-    boxPaintArea * interiorPaint.cost +
+    uprightArea * cncCostPerM2 +
+    boxPaintArea * paintingCostPerSquareMeter(interiorPaint) +
     (topFaceArea + sideMaterialArea) * exterior.cost +
-    (topPaintingArea + sidePaintingArea + piecePaintArea) * doorPaint.cost +
+    (topPaintingArea + sidePaintingArea + piecePaintArea) * paintingCostPerSquareMeter(doorPaint) +
     boxEdgeLength * edge.cost +
-    feet.cost;
+    feet.cost +
+    levelers.cost;
 
   const cabinetClient =
     plateArea * interior[plateSellKey] +
+    uprightArea * cncClientPerM2 +
     boxPaintArea * interiorPaint.client +
     (topFaceArea + sideMaterialArea) * exterior[plateSellKey] +
     (topPaintingArea + sidePaintingArea + piecePaintArea) * doorPaint.client +
     boxEdgeLength * edge.client +
-    feet.client;
+    feet.client +
+    levelers.client;
 
   let doorsCost = 0;
   let doorsClient = 0;
@@ -240,7 +302,7 @@ function calculateModulePrice(module, pricingMode = 'normal') {
     const oneDoorCost =
       doorMaterialArea * exterior.cost +
       doorEdgeLength * edge.cost +
-      doorPaintArea * doorPaint.cost +
+      doorPaintArea * paintingCostPerSquareMeter(doorPaint) +
       hingeCount * effectiveHinge.cost +
       system.cost;
 

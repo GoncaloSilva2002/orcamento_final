@@ -31,31 +31,47 @@ test('saving untouched displayed prices keeps automatic prices and full precisio
   assert.equal(tracked, 1);
 });
 
-test('a refresh failure after saving acknowledges the save; a write failure retains drafts', async () => {
+test('a refresh failure after saving acknowledges the save; a write failure discards drafts', async () => {
   for (const succeeds of [true, false]) {
     let pending = true;
+    let notice = null;
     const button = {};
     const context = vm.createContext({
       document: { querySelector: () => button },
-      sourceStatus: {}, state: {}, console: { error: () => {} },
+      sourceStatus: {}, state: { catalog: { hinges: [], doorSystems: [], openingSystemComponents: [] } }, console: { error: () => {} },
       canManagePrices: () => true,
+      setSupplierSaveNotice: (message, stateName) => { notice = { message, stateName }; },
+      setSupplierSaveButtonState: (saving) => { button.disabled = saving; },
+      trackSupplierChange: () => {},
       commitVisibleSupplierManualPrices: () => {}, flushSupplierDraftPersist: () => {},
       supplierRecalculationTimer: null,
       hasSupplierDirtyChanges: () => pending,
-      supplierDirtyPayload: () => ({ plates: [{ catalogId: 'a', reference: 'NEW' }] }),
+      restoreSupplierDirtyChanges: () => false,
+      recalculateSystemSummaries: () => {},
+      activeDoorSystems: () => [],
+      systemRecipeTotals: () => ({ components: 0 }),
+      syncDoorSystemExtras: () => {},
+      supplierSavePayload: () => ({ plates: [{ catalogId: 'a', reference: 'NEW' }] }),
       acknowledgeSupplierChanges: () => { pending = false; },
+      clearSupplierDirtyChanges: () => { pending = false; },
+      applySupplierCatalogResponse: () => {},
+      applySupplierAdditions: () => {},
+      applySupplierDraftChanges: () => {},
       fetch: async () => ({ ok: succeeds }),
       readJson: async () => ({ plates: [], error: 'Write failed' }),
       normalizeAllPlateNames: () => { throw new Error('Refresh failed'); }
     });
     vm.runInContext(source.slice(source.indexOf('async function saveSupplierPrices('), source.indexOf('async function showView(')), context);
+    await context.saveSupplierPrices();
     if (succeeds) {
-      await context.saveSupplierPrices();
       assert.equal(pending, false);
       assert.match(context.sourceStatus.textContent, /Precos guardados/);
+      assert.match(notice.message, /foram guardados/);
     } else {
-      await assert.rejects(context.saveSupplierPrices(), /Write failed/);
-      assert.equal(pending, true);
+      // Se a gravação falhar, os rascunhos são descartados e o erro é mostrado.
+      assert.equal(pending, false);
+      assert.match(context.sourceStatus.textContent, /Write failed/);
+      assert.equal(notice.stateName, 'error');
     }
     assert.equal(button.disabled, false);
   }
@@ -65,9 +81,54 @@ test('acknowledging a save preserves edits made during the request', () => {
   const saved = { catalogId: 'a', reference: 'saved' };
   const changed = { catalogId: 'b', reference: 'newer edit' };
   const changes = new Map([['a', saved], ['b', changed]]);
-  const context = vm.createContext({ supplierDirtyChanges: { plates: changes }, supplierDirtyKey: item => item.catalogId, persistSupplierDraftChanges: () => {} });
+  const context = vm.createContext({ supplierDirtyChanges: { plates: changes }, supplierDirtyKey: item => item.catalogId, clone: value => JSON.parse(JSON.stringify(value)), persistSupplierDraftChanges: () => {} });
   vm.runInContext(source.slice(source.indexOf('function acknowledgeSupplierChanges('), source.indexOf('function persistSupplierDraftChanges(')), context);
   context.acknowledgeSupplierChanges({ plates: [saved, { catalogId: 'b', reference: 'old edit' }] });
   assert.equal(changes.has('a'), false);
   assert.equal(changes.get('b'), changed);
+});
+
+test('supplier refresh notices painting client-price changes and applies the database value', () => {
+  const context = vm.createContext({
+    supplierCatalogSignature: '',
+    state: { catalog: { paintings: [{ name: 'Verniz', client: 6.35 }], plates: [] }, supplierPrices: [], costItems: [] },
+    clone: value => JSON.parse(JSON.stringify(value)),
+    recalculateCustomCostPrices: () => {},
+    normalizeAllPlateNames: () => {},
+    normalizeCatalogSalePrices: () => {}
+  });
+  vm.runInContext(source.slice(
+    source.indexOf('function supplierCatalogSignatureFor('),
+    source.indexOf('async function refreshSupplierCatalogFromServer(')
+  ), context);
+
+  const before = context.supplierCatalogSignatureFor({ paintings: [{ name: 'Verniz', client: 6.35 }] });
+  const after = context.supplierCatalogSignatureFor({ paintings: [{ name: 'Verniz', client: 110 }] });
+  assert.notEqual(before, after);
+
+  context.applySupplierCatalogResponse({ paintings: [{ name: 'Verniz', client: 110, serviceCostPerM2: 6.35 }] });
+  assert.equal(context.state.catalog.paintings[0].client, 110);
+  assert.equal(context.state.catalog.paintings[0].serviceCostPerM2, 6.35);
+});
+
+test('editing a painting client price immediately matches its reseller price', () => {
+  const item = { client: 110, reseller: 150 };
+  const context = vm.createContext({
+    supplierManualPriceList: () => [item],
+    num: value => Number(String(value).replace(',', '.')),
+    salePriceValue: Number,
+    supplierNumber: value => Number(value).toFixed(2),
+    clone: value => JSON.parse(JSON.stringify(value)),
+    ensureManualPriceBaseline: () => {},
+    trackManualPriceChange: () => {}
+  });
+  vm.runInContext(source.slice(
+    source.indexOf('function commitSupplierManualPriceInput('),
+    source.indexOf('function commitVisibleSupplierManualPrices(')
+  ), context);
+
+  const input = { dataset: { manualPriceType: 'paintings', manualPriceIndex: '0', manualPriceField: 'client' }, value: '125' };
+  assert.equal(context.commitSupplierManualPriceInput(input), true);
+  assert.equal(item.client, 125);
+  assert.equal(item.reseller, 125);
 });

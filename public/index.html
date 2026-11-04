@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Silwood | Or&ccedil;amento Cozinhas</title>
-  <link rel="stylesheet" href="/styles.css?v=108">
+  <link rel="stylesheet" href="/styles.css?v=119">
 </head>
 <body class="auth-gate-active">
   <section class="login-gate" id="loginGate" aria-label="Entrada na aplica&ccedil;&atilde;o">
@@ -42,6 +42,7 @@
         <button id="saveHistoryButton" type="button">Guardar no hist&oacute;rico</button>
         <div class="history-control">
           <span>Hist&oacute;rico</span>
+          <input class="quote-list-search" id="quoteHistorySearch" type="search" placeholder="Pesquisar or&ccedil;amento..." autocomplete="off">
           <div class="quote-list" id="quoteHistoryList"></div>
         </div>
       </div>
@@ -108,6 +109,7 @@
         </div>
         <div class="supplier-table-wrap" id="supplierPricesGrid"></div>
         <div class="supplier-save-actions">
+          <div id="supplierSaveNotice" class="supplier-save-notice" role="status" aria-live="polite" hidden></div>
           <button id="saveSupplierPricesButton" type="button">Gravar pre&ccedil;os</button>
         </div>
       </section>
@@ -123,8 +125,8 @@
     </main>
   </div>
   <section id="printSheet" class="print-sheet" aria-label="Or&ccedil;amento para impress&atilde;o"></section>
-  <script src="/led-transformers.js?v=1"></script>
-  <script src="/app.js?v=324"></script>
+  <script src="/led-transformers.js?v=2"></script>
+<script src="/app.js?v=375"></script>
 </body>
 </html>
 
