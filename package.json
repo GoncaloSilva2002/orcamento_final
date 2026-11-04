@@ -24,5 +24,8 @@
   },
   "devDependencies": {
     "pkg": "^5.8.1"
+  },
+  "overrides": {
+    "qs": "^6.17.1"
   }
 }
