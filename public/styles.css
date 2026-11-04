@@ -2484,12 +2484,18 @@ select,
   color: #a32323;
 }
 
-.module-split-actions {
-  grid-column: auto;
-  display: flex;
-  align-items: flex-end;
+.module-side-group {
+  grid-column: span 2;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
   min-width: 0;
-  padding: 7px 9px;
+}
+
+.module-split-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  min-width: 0;
 }
 
 .module-split-button {
@@ -4869,8 +4875,9 @@ body.is-admin .app-top .auth-panel {
     padding: 0;
   }
 
-  .module-split-actions {
+  .module-side-group {
     grid-column: auto;
+    grid-template-columns: 1fr;
   }
 
   .final-table tr {

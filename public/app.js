@@ -2472,9 +2472,11 @@ function renderModules() {
       '<label><span>PINTURA INTERIOR</span><select data-module="' + i + '" data-field="paintInterior">' + optionListWithBlank(state.lists.pinturas, m.paintInterior) + '</select></label>' +
       '<label><span>TIPO DE ORLA</span><select data-module="' + i + '" data-field="edgeType"' + (piecePlate ? ' disabled' : '') + '>' + optionListWithBlank(state.lists.orlas, m.edgeType) + '</select></label>' +
       '<label><span>TOPOS CIMA/BAIXO</span><select data-module="' + i + '" data-field="topBottomEdges"' + (piecePlate ? ' disabled' : '') + '>' + optionListWithBlank(state.lists.toposHorizontais, m.topBottomEdges) + '</select></label>' +
-      '<label class="module-side-field"><span>LATERAL ESQ.</span>' + moduleSideSelect(i, 'sideLeftEdge', m.sideLeftEdge, piecePlate || sideIsSplit) + '</label>' +
-      '<label class="module-side-field"><span>LATERAL DIR.</span>' + moduleSideSelect(i, 'sideRightEdge', m.sideRightEdge, piecePlate || sideIsSplit) + '</label>' +
-      splitButton +
+      '<div class="module-side-group">' +
+        '<label class="module-side-field"><span>LATERAL ESQ.</span>' + moduleSideSelect(i, 'sideLeftEdge', m.sideLeftEdge, piecePlate || sideIsSplit) + '</label>' +
+        '<label class="module-side-field"><span>LATERAL DIR.</span>' + moduleSideSelect(i, 'sideRightEdge', m.sideRightEdge, piecePlate || sideIsSplit) + '</label>' +
+        splitButton +
+      '</div>' +
       '<label><span>COSTA</span>' + input('number', m.back, 'min="0" step="1" data-module="' + i + '" data-field="back"' + (piecePlate ? ' disabled' : '')) + '</label>' +
       '<label><span>' + esc('DIVISÃ“RIA') + '</span>' + input('number', m.divider, 'min="0" step="1" data-module="' + i + '" data-field="divider"' + (piecePlate ? ' disabled' : '')) + '</label>' +
     '</div></td></tr>';
