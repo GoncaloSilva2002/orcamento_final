@@ -5,6 +5,7 @@ const otherExtraGroup = 'Outros';
 const manualExtraGroup = 'Manual';
 const transportExtraGroup = 'Transporte e embalamento';
 const ripadoExtraGroup = 'Ripado/Efeitos';
+const carpentryExtraGroup = 'Carpintaria';
 const pillowEffectItemName = 'Efeito almofada recuada';
 const duriosBinReference = 'BALDE LIXO - DURIOS';
 const duriosBinCompanionReference = 'FUNDO PVC';
@@ -3486,6 +3487,7 @@ function normalizeExtraGroupName(group) {
   if (text === 'PUXADORES') return 'Puxadores';
   if (text === 'TOMADAS') return 'Tomadas';
   if (text === 'GAVETAS') return 'Gavetas';
+  if (text === 'CARPINTARIA') return carpentryExtraGroup;
   if (text === comparableText(manualExtraGroup)) return manualExtraGroup;
   if (text.includes('PES') && text.includes('FIXACAO') && text.includes('ORGANIZACAO')) return 'Pés, Fixação e Organização';
   return original;
@@ -6104,6 +6106,7 @@ function isEditableExtraGroup(group) {
     text.includes('FIXACAO') ||
     text.includes('ORGANIZACAO') ||
     text.includes('RIPADO') ||
+    text.includes('CARPINTARIA') ||
     text.includes('ACESSORIOS ROUPEIRO');
 }
 
@@ -6694,6 +6697,7 @@ function renderSupplierPrices() {
   supplierExtraGroups.add('Gavetas');
   supplierExtraGroups.add(transportExtraGroup);
   supplierExtraGroups.add(ripadoExtraGroup);
+  supplierExtraGroups.add(carpentryExtraGroup);
   Array.from(supplierExtraGroups).filter(function (group) {
     return normalizeExtraGroupName(group) !== doorSystemExtraGroup;
   }).forEach(function (group) {
@@ -6721,7 +6725,7 @@ function renderSupplierPrices() {
     sections.push(renderSupplierSection(group, extraRows + drawerRows));
   });
   sections.push(renderCostSection());
-  const tabOrder = ['Madeiras / Placas', 'Puxadores', 'Rodapés (metros)', "LED'S (metros)", 'Pinturas', 'Orlas', 'Sistemas de abertura', 'Dobradicas / Ferragens', 'Outros', ripadoExtraGroup, 'Gavetas', 'Transporte e embalamento', 'Custos'];
+  const tabOrder = ['Madeiras / Placas', 'Puxadores', 'Rodapés (metros)', "LED'S (metros)", 'Pinturas', 'Orlas', 'Sistemas de abertura', 'Dobradicas / Ferragens', 'Outros', carpentryExtraGroup, ripadoExtraGroup, 'Gavetas', 'Transporte e embalamento', 'Custos'];
   sections.sort(function (a, b) {
     const title = html => (html.match(/<h3>(.*?)<\/h3>/) || [null, ''])[1];
     const ai = tabOrder.indexOf(title(a));

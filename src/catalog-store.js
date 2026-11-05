@@ -404,7 +404,7 @@ function createCatalogStore(options = {}) {
 
   async function readUserDatabaseMaterials() {
     const get = table => request(table + '?select=*');
-    const [plates, paints, hinges, edges, doors, handles, baseboards, others, leds, drawers, transport, ripados, components, paintComponents, drawerComponents, hingeComponents, openingComponents, types, suppliers, metaRows, laborRows, costRows] = await Promise.all([
+    const [plates, paints, hinges, edges, doors, handles, baseboards, others, leds, drawers, transport, ripados, carpentry, components, paintComponents, drawerComponents, hingeComponents, openingComponents, types, suppliers, metaRows, laborRows, costRows] = await Promise.all([
       get('placas_madeira'), get('tintas'), request('ferragens?select=*,fornecedor!ferragens_id_fornecedor_fkey(fornecedor)'), get('orlas'), get('sistema_abertura'),
       request('puxadores?select=*,fornecedor!puxadores_id_fornecedor_fkey(fornecedor),tipo!puxadores_id_tipo_fkey(tipo)'),
       request('rodapes?select=*,fornecedor!rodapes_id_fornecedor_fkey(fornecedor),tipo!rodapes_id_tipo_fkey(tipo)'),
@@ -414,6 +414,7 @@ function createCatalogStore(options = {}) {
       get('transporte_embalamento'),
       // Tabela nova; enquanto a migração não correr, a aba usa o item padrão do servidor.
       get('ripado_efeitos').catch(() => []),
+      get('carpintaria').catch(() => []),
       get('componente'), get('tinta_componentes'), get('gaveta_componentes'), get('ferragem_componentes'), get('sistema_abertura_componentes'), get('tipo'), get('fornecedor'),
       request('app_catalog_meta?select=lists,type_presets,feet_prices&order=revision.desc&limit=1').catch(() => []),
       request('mao_de_obra?select=codigo,valor').catch(() => []),
@@ -538,6 +539,7 @@ function createCatalogStore(options = {}) {
       ...leds.map(row => materialRow(row, 'led', row.id, { group: 'LED', supplier: supplierFor(row) })),
       ...transport.map(row => materialRow(row, 'transporte_embalamento', row.id, { group: 'Transporte e embalamento', supplier: supplierFor(row) })),
       ...ripados.map(row => materialRow(row, 'ripado_efeitos', row.id, { group: 'Ripado/Efeitos', supplier: supplierFor(row) })),
+      ...carpentry.map(row => materialRow(row, 'carpintaria', row.id, { group: 'Carpintaria', supplier: supplierFor(row) })),
       ...drawers.map(row => materialRow(row, 'gaveta', row.id, { group: 'Gavetas', supplier: supplierFor(row), ...withType(row) }))
     ];
     const data = {
@@ -634,7 +636,7 @@ function createCatalogStore(options = {}) {
     row.custo = Number(item.cost || 0);
     // A tabela de transporte/embalamento nao tem id_fornecedor.
     // As restantes tabelas de materiais mantem a relacao com fornecedor.
-    const supplierTables = ['placas_madeira', 'tintas', 'ferragens', 'orlas', 'sistema_abertura', 'puxadores', 'rodapes', 'outro', 'led', 'gaveta', 'ripado_efeitos'];
+    const supplierTables = ['placas_madeira', 'tintas', 'ferragens', 'orlas', 'sistema_abertura', 'puxadores', 'rodapes', 'outro', 'led', 'gaveta', 'ripado_efeitos', 'carpintaria'];
     if (supplierTables.includes(table)) {
       const supplierId = await supplierIdFor(item);
       if (supplierId !== null) row.id_fornecedor = supplierId;
@@ -716,8 +718,8 @@ function createCatalogStore(options = {}) {
     for (const item of changedItems('extras')) {
       const group = String(item.group || '').toLowerCase();
       const prefix = String(item.catalogId || '').split(':')[0];
-      const table = { puxadores: 'puxadores', rodapes: 'rodapes', led: 'led', gaveta: 'gaveta', ripado_efeitos: 'ripado_efeitos' }[prefix] ||
-      (group.includes('ripado') ? 'ripado_efeitos' : group.includes('puxador') ? 'puxadores' : group.includes('rodap') ? 'rodapes' : group.includes('led') ? 'led' : group.includes('transport') || group.includes('embal') ? 'transporte_embalamento' : group === 'outros' || group === 'outro' || group.includes('acess') ? 'outro' : group === 'gavetas' ? 'gaveta' : null);
+      const table = { puxadores: 'puxadores', rodapes: 'rodapes', led: 'led', gaveta: 'gaveta', ripado_efeitos: 'ripado_efeitos', carpintaria: 'carpintaria' }[prefix] ||
+      (group.includes('ripado') ? 'ripado_efeitos' : group.includes('carpintaria') ? 'carpintaria' : group.includes('puxador') ? 'puxadores' : group.includes('rodap') ? 'rodapes' : group.includes('led') ? 'led' : group.includes('transport') || group.includes('embal') ? 'transporte_embalamento' : group === 'outros' || group === 'outro' || group.includes('acess') ? 'outro' : group === 'gavetas' ? 'gaveta' : null);
       const match = String(item.catalogId || '').match(/^([^:]+):([1-9]\d*)$/);
       if (!table) continue;
       if (item.__delete) {
@@ -915,7 +917,7 @@ function createCatalogStore(options = {}) {
       hingeComponents: 'ferragem_componentes', openingSystemComponents: 'sistema_abertura_componentes',
       drawerComponents: 'gaveta_componentes', puxadores: 'puxadores', rodapes: 'rodapes',
       outro: 'outro', led: 'led', gaveta: 'gaveta', transporte_embalamento: 'transporte_embalamento',
-      ripado_efeitos: 'ripado_efeitos'
+      ripado_efeitos: 'ripado_efeitos', carpintaria: 'carpintaria'
     };
     const prefix = String(catalogId || '').split(':')[0];
     const table = tables[category] || tables[prefix] || ({
