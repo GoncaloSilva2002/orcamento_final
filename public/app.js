@@ -2289,7 +2289,7 @@ function renderModulePreview(module, index) {
       '<label><span>Larg.</span>' + input('number', module.width, 'min="0" step="1" data-preview-module="' + index + '" data-field="width"') + '</label>' +
       '<label><span>Alt.</span>' + input('number', module.height, 'min="0" step="1" data-preview-module="' + index + '" data-field="height"') + '</label>' +
       '<label><span>Prof.</span>' + input('number', module.depth, 'min="0" step="1" data-preview-module="' + index + '" data-field="depth"') + '</label>' +
-      '<label><span>Portas</span>' + input('number', module.doors, 'min="0" step="1" data-preview-module="' + index + '" data-field="doors"') + '</label>' +
+      '<label><span>Portas/Frentes</span>' + input('number', module.doors, 'min="0" step="1" data-preview-module="' + index + '" data-field="doors"') + '</label>' +
       '<label><span>Prat.</span>' + input('number', module.shelves, 'min="0" step="1" data-preview-module="' + index + '" data-field="shelves"') + '</label>' +
       '<label><span>Div.</span>' + input('number', module.divider, 'min="0" step="1" data-preview-module="' + index + '" data-field="divider"') + '</label>' +
     '</div>' +
@@ -2432,7 +2432,7 @@ function removeModuleSystemFields() {
 
 function renderModules() {
   const sellLabel = state.pricingMode === 'reseller' ? 'REVENDEDOR' : 'CLIENTE';
-  const headings = ['AÃ‡ÃƒO','MÓVEL','TIPO','QTD','LARG.','ALT.','PROF.','PORTAS','PRAT.','INTERIOR','EXTERIOR','PINTURA','SISTEMA','DOBRADIÃ‡A','P. UNIT ' + sellLabel,'TOTAL ' + sellLabel,'CUSTO UNIT.','TOTAL CUSTO'];
+  const headings = ['AÃ‡ÃƒO','MÓVEL','TIPO','QTD','LARG.','ALT.','PROF.','PORTAS/FRENTES','PRAT.','INTERIOR','EXTERIOR','PINTURA','SISTEMA','DOBRADIÃ‡A','P. UNIT ' + sellLabel,'TOTAL ' + sellLabel,'CUSTO UNIT.','TOTAL CUSTO'];
   modulesGrid.innerHTML = datalistOptions('moduleInteriorOptions', state.lists.interiores) + datalistOptions('moduleExteriorOptions', state.lists.exteriores) + '<table class="excel-table modules-table"><colgroup>' + '<col>'.repeat(18) + '</colgroup><thead><tr>' + headings.map(function (h, index) { return '<th' + (index >= 16 ? ' class="cost-cell"' : '') + '>' + esc(h) + '</th>'; }).join('') + '</tr></thead><tbody>' + state.modules.map(function (m, i) {
     const piecePlate = isPiecePlate(m);
     const splitButton = num(m.quantity) > 1 ? '<div class="module-split-actions"><button class="soft-inline-button module-split-button" data-split-module="' + i + '" type="button">Dividir por modulo</button></div>' : '';
@@ -2464,7 +2464,6 @@ function renderModules() {
     '<tr class="module-detail-row"><td colspan="18"><div class="module-details">' +
       '<label><span>QUANTIDADE</span>' + input('number', m.quantity, 'min="0" step="1" data-module="' + i + '" data-field="quantity"') + '</label>' +
       '<label><span>MÓVEL</span><select data-module="' + i + '" data-field="furnitureGroupId">' + furnitureGroupOptions(m.furnitureGroupId || '') + '</select></label>' +
-      '<label><span>TIPO</span><select data-module="' + i + '" data-field="type">' + optionListWithBlank(state.lists.tipos, m.type) + '</select></label>' +
       '<label><span>INTERIOR</span><select data-module="' + i + '" data-field="interior">' + optionListWithBlank(state.lists.interiores, m.interior) + '</select></label>' +
       '<label><span>EXTERIOR</span><select data-module="' + i + '" data-field="exterior"' + (piecePlate ? ' disabled' : '') + '>' + optionListWithBlank(piecePlate ? ['Não aplicável'] : state.lists.exteriores, m.exterior) + '</select></label>' +
       '<label><span>PINTURA</span><select data-module="' + i + '" data-field="paintDoor">' + optionListWithBlank(state.lists.pinturas, m.paintDoor) + '</select></label>' +

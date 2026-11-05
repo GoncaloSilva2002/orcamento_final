@@ -2530,7 +2530,7 @@ select,
 .module-main-row td:nth-child(4)::before { content: "Larg."; }
 .module-main-row td:nth-child(5)::before { content: "Alt."; }
 .module-main-row td:nth-child(6)::before { content: "Prof."; }
-.module-main-row td:nth-child(7)::before { content: "Portas"; }
+.module-main-row td:nth-child(7)::before { content: "Portas/Frentes"; }
 .module-main-row td:nth-child(8)::before { content: "Prat."; }
 .module-main-row td:nth-child(9)::before { content: "Interior"; }
 .module-main-row td:nth-child(10)::before { content: "Exterior"; }
@@ -5087,7 +5087,7 @@ body.is-admin .app-top .auth-panel {
 .module-main-row td:nth-child(5)::before { content: "Larg."; }
 .module-main-row td:nth-child(6)::before { content: "Alt."; }
 .module-main-row td:nth-child(7)::before { content: "Prof."; }
-.module-main-row td:nth-child(8)::before { content: "Portas"; }
+.module-main-row td:nth-child(8)::before { content: "Portas/Frentes"; }
 .module-main-row td:nth-child(9)::before { content: "Prat."; }
 .module-main-row td:nth-child(10)::before { content: "Interior"; }
 .module-main-row td:nth-child(11)::before { content: "Exterior"; }
@@ -5392,7 +5392,7 @@ body.is-standard-user .final-table col:nth-child(8) { display: none !important; 
 @media screen and (min-width: 721px) {
   #modulesGrid .modules-table .module-main-row {
     display: grid !important;
-    grid-template-columns: 34px minmax(260px, 3.4fr) minmax(68px, .65fr) minmax(68px, .65fr) repeat(4, minmax(100px, 1fr));
+    grid-template-columns: 34px minmax(160px, 1.3fr) minmax(250px, 3.4fr) minmax(96px, .8fr) minmax(76px, .65fr) repeat(4, minmax(90px, 1fr));
     gap: 6px;
     width: 100% !important;
     min-width: 0 !important;
@@ -5413,7 +5413,6 @@ body.is-standard-user .final-table col:nth-child(8) { display: none !important; 
   /* Keep secondary selectors in the detail card; the main row is for the
      values needed while configuring a module. */
   #modulesGrid .modules-table .module-main-row > td:nth-child(2),
-  #modulesGrid .modules-table .module-main-row > td:nth-child(3),
   #modulesGrid .modules-table .module-main-row > td:nth-child(4),
   #modulesGrid .modules-table .module-main-row > td:nth-child(6),
   #modulesGrid .modules-table .module-main-row > td:nth-child(7),
@@ -5432,6 +5431,7 @@ body.is-standard-user .final-table col:nth-child(8) { display: none !important; 
     border: 0 !important;
   }
 
+  #modulesGrid .modules-table .module-main-row > td:nth-child(3),
   #modulesGrid .modules-table .module-main-row > td:nth-child(5),
   #modulesGrid .modules-table .module-main-row > td:nth-child(8),
   #modulesGrid .modules-table .module-main-row > td:nth-child(9) {
@@ -5442,13 +5442,18 @@ body.is-standard-user .final-table col:nth-child(8) { display: none !important; 
   }
 
   #modulesGrid .modules-table .module-main-row > td:nth-child(8)::before {
-    content: "PORTAS";
+    content: "PORTAS/FRENTES";
   }
 
   #modulesGrid .modules-table .module-main-row > td:nth-child(9)::before {
     content: "PRATELEIRAS";
   }
 
+  #modulesGrid .modules-table .module-main-row > td:nth-child(3)::before {
+    content: "TIPO";
+  }
+
+  #modulesGrid .modules-table .module-main-row > td:nth-child(3) select,
   #modulesGrid .modules-table .module-main-row > td:nth-child(8) input,
   #modulesGrid .modules-table .module-main-row > td:nth-child(9) input {
     display: block !important;
@@ -5500,6 +5505,27 @@ body.is-standard-user .final-table col:nth-child(8) { display: none !important; 
     background: #f7f7f8 !important;
     border: 1px solid #eeeeee !important;
     border-radius: 7px !important;
+  }
+}
+
+/* Narrow desktops: tighter minimums so the module row fits without cutting
+   off the price cells. */
+@media screen and (min-width: 721px) and (max-width: 1250px) {
+  #modulesGrid .modules-table .module-main-row {
+    grid-template-columns: 30px minmax(112px, 1fr) minmax(160px, 2.4fr) minmax(92px, .8fr) minmax(70px, .6fr) repeat(4, minmax(62px, 1fr));
+    gap: 4px;
+  }
+
+  #modulesGrid .modules-table .module-main-row > td:nth-child(n+15) {
+    padding: 18px 4px 6px !important;
+  }
+  #modulesGrid .modules-table .module-main-row > td:nth-child(3) {
+    padding: 18px 5px 7px !important;
+  }
+
+  #modulesGrid .modules-table .module-main-row > td:nth-child(3) select {
+    padding: 5px 2px 5px 5px !important;
+    font-size: 11px !important;
   }
 }
 
@@ -5708,6 +5734,7 @@ label[for] {
 
   .modules-table tbody > tr.module-main-row > td.module-dimensions-cell,
   .modules-table tbody > tr.module-main-row > td.module-action-cell,
+  .modules-table tbody > tr.module-main-row > td:nth-child(3),
   .modules-table tbody > tr.module-main-row > td:nth-child(8),
   .modules-table tbody > tr.module-main-row > td:nth-child(9),
   .modules-table tbody > tr.module-main-row > td.total-cell,
@@ -5718,7 +5745,8 @@ label[for] {
     max-width: none !important;
   }
 
-  .modules-table tbody > tr.module-main-row > td.module-dimensions-cell {
+  .modules-table tbody > tr.module-main-row > td.module-dimensions-cell,
+  .modules-table tbody > tr.module-main-row > td:nth-child(3) {
     grid-column: 1 / -1 !important;
   }
 
