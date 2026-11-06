@@ -357,11 +357,15 @@ function carpentryArea(module, kind) {
   const w = Number(module.width) || 0;
   const h = Number(module.height) || 0;
   const d = Number(module.depth) || 0;
-  const top = sheetText(module.frameTop) === 'SEM' ? 0 : w;
+  // Aro: '' = 2 laterais + topo; 'sem' = só 2 laterais (ao teto);
+  // 'topo' = só 1 topo; 'nenhum' = sem aro. Todas as opções servem para qualquer porta.
+  const option = sheetText(module.frameTop);
+  const sides = option === 'TOPO' || option === 'NENHUM' ? 0 : 2;
+  const top = option === 'SEM' || option === 'NENHUM' ? 0 : w;
   // Porta pivot: bandeira por cima da porta (largura da porta x altura da bandeira);
   // as laterais do aro sobem a altura da porta + bandeira.
   const transom = kind === 'pivot' ? Number(module.transomHeight) || 0 : 0;
-  const frame = kind === 'skirting' ? 0 : (2 * (h + transom) + top) * d;
+  const frame = kind === 'skirting' ? 0 : (sides * (h + transom) + top) * d;
   return { door: (w * h + w * transom) / 10000, frame: frame / 10000 };
 }
 

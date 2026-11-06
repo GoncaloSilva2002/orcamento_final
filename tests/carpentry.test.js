@@ -122,3 +122,16 @@ test('the frame is priced with its own wood', async () => {
   // Porta 1,6 m2; aro (2 x 200 + 80) x 10 = 0,48 m2.
   close(mixed.unitClient, 1.6 * sameWood.woodPricePerM2 + 0.48 * otherWood.woodPricePerM2);
 });
+
+// Opções do aro, em qualquer porta: só 1 topo (largura x profundidade) e sem aro (nada).
+test('the frame can be top only or left out on any door', async () => {
+  const door = { carpentryType: 'Porta Standard', width: 80, height: 200, depth: 10 };
+  const full = await woodLine(door);
+  const hinges = full.unitClient - (1.6 + 0.48) * full.woodPricePerM2;
+  close((await woodLine({ ...door, frameTop: 'sem' })).unitClient - hinges, (1.6 + 0.4) * full.woodPricePerM2);
+  close((await woodLine({ ...door, frameTop: 'topo' })).unitClient - hinges, (1.6 + 0.08) * full.woodPricePerM2);
+  close((await woodLine({ ...door, frameTop: 'nenhum' })).unitClient - hinges, 1.6 * full.woodPricePerM2);
+  // Também na pivot e na de correr.
+  close((await woodLine({ ...door, carpentryType: 'Porta Pivot', frameTop: 'topo' })).unitClient, (1.6 + 0.08) * full.woodPricePerM2);
+  close((await woodLine({ ...door, carpentryType: 'Porta de Correr Standard', frameTop: 'nenhum' })).unitClient, 1.6 * full.woodPricePerM2);
+});

@@ -5828,3 +5828,16 @@ label[for] {
 @media screen and (min-width: 721px) and (max-width: 1250px) {
   #modulesGrid .modules-table .module-main-row > td[data-module-cost-total]::before { content: "T. CUSTO"; }
 }
+
+/* "+ Adicionar extra": the header kept a fixed 128px column, so the button
+   spilled past the right edge. Size the column to the button, like the modules header. */
+#orcamentoFinal .section-title-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  overflow: hidden;
+  border-radius: 10px 10px 0 0;
+}
+
+#orcamentoFinal #addExtraButton {
+  padding-left: 16px;
+  padding-right: 16px;
+}

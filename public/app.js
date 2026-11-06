@@ -13,14 +13,29 @@ const carpentryThickness = { 'Porta Standard': 3.5, 'Porta Standard à Face': 3.
 // Orçamentos antigos guardaram estes nomes.
 const legacyCarpentryTypes = { 'Porta': 'Porta Standard', 'Porta de correr': 'Porta de Correr Standard' };
 
-// Área da carpintaria (m2): porta (largura x altura) + aro nas portas (2 laterais + topo) x profundidade.
-// Aro sem topo (ao teto): só as 2 laterais.
+// Opções do aro: '' = 2 laterais + topo, 'sem' = só 2 laterais (ao teto),
+// 'topo' = só 1 topo, 'nenhum' = sem aro.
+// Todas as opções aparecem sempre, em qualquer porta.
+const carpentryFrameOptions = [
+  ['', 'Com topo (2 laterais + topo)'],
+  ['sem', 'Sem topo, ao teto (só 2 laterais)'],
+  ['topo', 'Só 1 topo (porta correr)'],
+  ['nenhum', 'Sem aro (porta pivot)']
+];
+
+function carpentryFrameOption(m) {
+  return carpentryFrameOptions.some(function (option) { return option[0] === (m.frameTop || ''); }) ? (m.frameTop || '') : '';
+}
+
+// Área da carpintaria (m2): porta (largura x altura) + aro nas portas x profundidade.
 function carpentryAreaM2(m) {
   const w = num(m.width), h = num(m.height), d = num(m.depth);
-  const top = m.frameTop === 'sem' ? 0 : w;
+  const option = carpentryFrameOption(m);
+  const sides = option === 'topo' || option === 'nenhum' ? 0 : 2;
+  const top = option === 'sem' || option === 'nenhum' ? 0 : w;
   // Porta pivot: bandeira (largura da porta x altura da bandeira); o aro sobe porta + bandeira.
   const transom = normalizeCarpentryType(m.carpentryType) === 'Porta Pivot' ? num(m.transomHeight) : 0;
-  const frame = /^Rodap/.test(normalizeCarpentryType(m.carpentryType)) ? 0 : (2 * (h + transom) + top) * d;
+  const frame = /^Rodap/.test(normalizeCarpentryType(m.carpentryType)) ? 0 : (sides * (h + transom) + top) * d;
   return (w * h + w * transom + frame) / 10000;
 }
 
@@ -1677,7 +1692,10 @@ function carpentryDescription(m) {
   if (wood) parts.push('Madeira: ' + wood);
   if (paint && comparableText(paint) !== 'NENHUMA') parts.push('Pintura: ' + paint);
   if (carpentryUsesHinges(m.carpentryType) && m.hinge && m.hinge !== 'Nenhuma') parts.push('Dobradiça: ' + cleanDisplayText(m.hinge));
-  const frameWood = /^Porta/.test(normalizeCarpentryType(m.carpentryType)) ? cleanMaterialName(m.frameWood) : '';
+  const isDoor = /^Porta/.test(normalizeCarpentryType(m.carpentryType));
+  const frameOption = carpentryFrameOptions.find(function (option) { return option[0] === carpentryFrameOption(m); });
+  if (isDoor && frameOption) parts.push('Aro: ' + frameOption[1]);
+  const frameWood = isDoor && carpentryFrameOption(m) !== 'nenhum' ? cleanMaterialName(m.frameWood) : '';
   if (frameWood) parts.push('Madeira aro: ' + frameWood);
   return parts.join(' / ');
 }
@@ -2549,11 +2567,12 @@ function renderModules() {
           '<label><span>PINTURA</span><select data-module="' + i + '" data-field="paintInterior">' + optionListWithBlank(state.lists.pinturas, m.paintInterior) + '</select></label>' +
           (m.carpentryType === 'Porta Pivot' ? '<label><span>ALTURA BANDEIRA (cm)</span>' + input('number', num(m.transomHeight) || '', 'min="0" step="0.1" placeholder="Sem bandeira" data-module="' + i + '" data-field="transomHeight"') + '</label>' : '') +
           (/^Porta/.test(m.carpentryType || '') ? '<label><span>ARO</span><select data-module="' + i + '" data-field="frameTop">' +
-            '<option value=""' + (m.frameTop === 'sem' ? '' : ' selected') + '>Com topo (2 laterais + topo)</option>' +
-            '<option value="sem"' + (m.frameTop === 'sem' ? ' selected' : '') + '>Sem topo, ao teto (só 2 laterais)</option>' +
+            carpentryFrameOptions.map(function (option) {
+              return '<option value="' + option[0] + '"' + (carpentryFrameOption(m) === option[0] ? ' selected' : '') + '>' + esc(option[1]) + '</option>';
+            }).join('') +
             '</select></label>' +
-            // O aro tem a sua própria madeira (a porta é MDF; o aro é outro material).
-            '<label><span>MADEIRA ARO</span><select data-module="' + i + '" data-field="frameWood">' + optionListWithBlank(state.lists.interiores, m.frameWood || '') + '</select></label>' : '') +
+            // O aro tem a sua própria madeira (a porta é MDF; o aro é outro material). Sem aro: não aparece.
+            (carpentryFrameOption(m) === 'nenhum' ? '' : '<label><span>MADEIRA ARO</span><select data-module="' + i + '" data-field="frameWood">' + optionListWithBlank(state.lists.interiores, m.frameWood || '') + '</select></label>') : '') +
           '<label><span>ÁREA (m²)</span>' + input('text', carpentryAreaM2(m).toFixed(3).replace('.', ','), 'readonly tabindex="-1"') + '</label>' +
           (carpentryThickness[m.carpentryType] ? '<label><span>ESPESSURA PORTA (cm)</span>' + input('text', String(carpentryThickness[m.carpentryType]).replace('.', ','), 'readonly tabindex="-1"') + '</label>' : '') +
           (carpentryUsesHinges(m.carpentryType) ? '<label><span>DOBRADIÇA</span><select data-module="' + i + '" data-field="hinge">' + optionListWithBlank(state.lists.dobradicas, m.hinge) + '</select></label>' : '') +
