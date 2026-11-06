@@ -325,12 +325,96 @@ function calculateModulePrice(module, pricingMode = 'normal') {
 }
 
 
+// Carpintaria (portas soltas, portas de correr e rodapés): uma única peça de
+// largura x altura na madeira escolhida, com orla, pintura e, nas portas de
+// abrir, dobradiças — os mesmos preços que as portas dos módulos.
+const carpentryTypes = ['Porta Standard', 'Porta Standard à Face', 'Porta de Correr Standard', 'Porta Meio Fio', 'Porta Meio Fio à Face', 'Porta Pivot', 'Rodapés'];
+
+function carpentryKind(value) {
+  const text = sheetText(value).replace(/\s+/g, ' ').trim();
+  if (text.includes('CORRER')) return 'sliding';
+  if (text.includes('RODAP')) return 'skirting';
+  // A porta pivot roda num pivô: madeira, orla e pintura, sem dobradiças.
+  if (text.includes('PIVOT')) return 'pivot';
+  if (text.includes('PORTA')) return 'door';
+  return '';
+}
+
+// Primeiro preço encontrado entre os nomes dados (o escolhido e os valores por omissão).
+function firstPrice(items, ...names) {
+  for (const name of names) {
+    const found = findPrice(items, name);
+    if (found.name) return found;
+  }
+  return { cost: 0, client: 0, reseller: 0 };
+}
+
+// Área da carpintaria em m2: a porta (largura x altura) e, nas portas, o aro
+// (2 laterais + topo) com a profundidade da linha. Aro sem topo (ao teto): só as laterais.
+// Devolve os m2 da porta (com a bandeira) e os m2 do aro em separado, porque
+// o aro pode ter outra madeira.
+function carpentryArea(module, kind) {
+  const w = Number(module.width) || 0;
+  const h = Number(module.height) || 0;
+  const d = Number(module.depth) || 0;
+  const top = sheetText(module.frameTop) === 'SEM' ? 0 : w;
+  // Porta pivot: bandeira por cima da porta (largura da porta x altura da bandeira);
+  // as laterais do aro sobem a altura da porta + bandeira.
+  const transom = kind === 'pivot' ? Number(module.transomHeight) || 0 : 0;
+  const frame = kind === 'skirting' ? 0 : (2 * (h + transom) + top) * d;
+  return { door: (w * h + w * transom) / 10000, frame: frame / 10000 };
+}
+
+function calculateCarpentryPrice(module, pricingMode = 'normal') {
+  const zero = { unitCost: 0, unitClient: 0 };
+  const kind = carpentryKind(module.carpentryType);
+  if (!kind || !String(module.interior || '').trim()) return zero;
+  const plate = findPlatePrice(module.interior);
+  if (!plate.name && !plate.cost && !plate.client && !plate.reseller) return zero;
+  const sellKey = pricingMode === 'reseller' ? 'reseller' : 'client';
+  const w = Number(module.width) || 0;
+  const h = Number(module.height) || 0;
+  const area = w * h / 10000;
+  const paint = findPrice(catalog.paintings, module.paintInterior || 'Nenhuma');
+  const paintCostPerM2 = (Number(paint.cost) || 0) + (Number(paint.serviceCostPerM2) || 0);
+  // A carpintaria não leva orla.
+  const hinge = kind === 'door'
+    ? firstPrice(catalog.hinges, module.hinge, 'Dobradiça Standard (com mola)', 'DobradiÃ§a Standard (com mola)')
+    : { cost: 0, client: 0 };
+  const hingeCount = kind === 'door' && area > 0 ? (h <= 89 ? 2 : h <= 180 ? 3 : h <= 240 ? 4 : 5) : 0;
+  // m2 da porta (+ bandeira) ao preço da madeira da porta e m2 do aro ao preço
+  // da madeira do aro (sem madeira do aro escolhida, usa a da porta). Preços por
+  // m2 da placa, já com a margem (cliente/revenda).
+  const areas = carpentryArea(module, kind);
+  const woodArea = areas.door + areas.frame;
+  const woodPricePerM2 = Number(plate[sellKey]) || Number(plate.client) || 0;
+  const framePlate = String(module.frameWood || '').trim() ? findPlatePrice(module.frameWood) : plate;
+  const framePricePerM2 = Number(framePlate[sellKey]) || Number(framePlate.client) || 0;
+
+  const cost =
+    areas.door * (Number(plate.cost) || 0) +
+    areas.frame * (Number(framePlate.cost) || 0) +
+    woodArea * paintCostPerM2 +
+    hingeCount * (Number(hinge.cost) || 0);
+  const client =
+    areas.door * woodPricePerM2 +
+    areas.frame * framePricePerM2 +
+    woodArea * (Number(paint.client) || 0) +
+    hingeCount * (Number(hinge[sellKey] ?? hinge.client) || 0);
+  return {
+    unitCost: Math.max(0, Math.round(cost * 10000) / 10000),
+    unitClient: Math.max(0, Math.round(client * 10000) / 10000),
+    area: Math.round(woodArea * 10000) / 10000,
+    woodPricePerM2
+  };
+}
+
 Object.values(typePresets).forEach(preset => {
   preset.quantity = 1;
   preset.pricingBase = pricingSnapshot(preset);
 });
 
 
-return { catalog, lists, typePresets, feetPrices, enrichModules, calculateModulePrice, inferType };
+return { catalog, lists, typePresets, feetPrices, enrichModules, calculateModulePrice, calculateCarpentryPrice, carpentryTypes, inferType };
 }
 module.exports = { createPricingEngine };

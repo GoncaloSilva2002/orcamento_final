@@ -2616,12 +2616,20 @@ select,
 }
 
 .final-module-dimensions-summary {
-  grid-template-columns: repeat(3, minmax(42px, 1fr));
+  grid-template-columns: repeat(3, auto);
+  justify-content: start;
+  gap: 6px;
+  min-width: 0;
 }
 
 .final-module-dimensions-summary span {
   display: grid;
-  gap: 2px;
+  gap: 1px;
+  min-width: 48px;
+  padding: 3px 8px;
+  border: 1px solid #eeeeee;
+  border-radius: 6px;
+  background: #f7f7f8;
   color: #6f6f78;
   font-size: 9px;
   text-align: center;
@@ -5419,8 +5427,8 @@ body.is-standard-user .final-table col:nth-child(8) { display: none !important; 
   #modulesGrid .modules-table .module-main-row > td:nth-child(10),
   #modulesGrid .modules-table .module-main-row > td:nth-child(11),
   #modulesGrid .modules-table .module-main-row > td:nth-child(12),
-  #modulesGrid .modules-table .module-main-row > td:nth-child(13),
-  #modulesGrid .modules-table .module-main-row > td:nth-child(14) {
+  #modulesGrid .modules-table .module-main-row > td:nth-child(13):not([data-module-client-unit]),
+  #modulesGrid .modules-table .module-main-row > td:nth-child(14):not([data-module-client-unit]) {
     display: none !important;
   }
 
@@ -5499,7 +5507,11 @@ body.is-standard-user .final-table col:nth-child(8) { display: none !important; 
     text-align: center;
   }
 
-  #modulesGrid .modules-table .module-main-row > td:nth-child(n+15) {
+  #modulesGrid .modules-table .module-main-row > td[data-module-client-unit],
+  #modulesGrid .modules-table .module-main-row > td[data-module-client-total],
+  #modulesGrid .modules-table .module-main-row > td[data-module-cost-unit],
+  #modulesGrid .modules-table .module-main-row > td[data-module-cost-total] {
+    display: flex !important;
     justify-content: center;
     padding: 18px 8px 8px !important;
     background: #f7f7f8 !important;
@@ -5516,7 +5528,10 @@ body.is-standard-user .final-table col:nth-child(8) { display: none !important; 
     gap: 4px;
   }
 
-  #modulesGrid .modules-table .module-main-row > td:nth-child(n+15) {
+  #modulesGrid .modules-table .module-main-row > td[data-module-client-unit],
+  #modulesGrid .modules-table .module-main-row > td[data-module-client-total],
+  #modulesGrid .modules-table .module-main-row > td[data-module-cost-unit],
+  #modulesGrid .modules-table .module-main-row > td[data-module-cost-total] {
     padding: 18px 4px 6px !important;
   }
   #modulesGrid .modules-table .module-main-row > td:nth-child(3) {
@@ -5773,4 +5788,43 @@ label[for] {
     min-width: 0 !important;
     min-height: 40px;
   }
+}
+
+/* Carpentry modules: highlight the carpentry article field. */
+.module-details .module-carpentry-field {
+  border-color: #d6b98c !important;
+  background: #fbf6ee !important;
+}
+
+/* Carpentry modules have no doors/shelves: drop those two empty cells. */
+#modulesGrid .modules-table .module-main-row.module-carpentry-row > td:nth-child(8),
+#modulesGrid .modules-table .module-main-row.module-carpentry-row > td:nth-child(9),
+.modules-table tbody > tr.module-main-row.module-carpentry-row > td:nth-child(8),
+.modules-table tbody > tr.module-main-row.module-carpentry-row > td:nth-child(9) {
+  display: none !important;
+}
+
+@media screen and (min-width: 721px) {
+  #modulesGrid .modules-table .module-main-row.module-carpentry-row {
+    grid-template-columns: 34px minmax(160px, 1.3fr) minmax(250px, 3.4fr) repeat(4, minmax(90px, 1fr));
+  }
+}
+
+@media screen and (min-width: 721px) and (max-width: 1250px) {
+  #modulesGrid .modules-table .module-main-row.module-carpentry-row {
+    grid-template-columns: 30px minmax(112px, 1fr) minmax(160px, 2.4fr) repeat(4, minmax(62px, 1fr));
+  }
+}
+
+/* The "Sistema" cell is removed from the module row by app.js, so the price
+   cells do not sit at fixed positions: label them by what they hold. */
+@media screen and (min-width: 721px) {
+  #modulesGrid .modules-table .module-main-row > td[data-module-client-unit]::before { content: "P. UNIT"; }
+  #modulesGrid .modules-table .module-main-row > td[data-module-client-total]::before { content: "TOTAL"; }
+  #modulesGrid .modules-table .module-main-row > td[data-module-cost-unit]::before { content: "CUSTO UNIT."; }
+  #modulesGrid .modules-table .module-main-row > td[data-module-cost-total]::before { content: "TOTAL CUSTO"; }
+}
+
+@media screen and (min-width: 721px) and (max-width: 1250px) {
+  #modulesGrid .modules-table .module-main-row > td[data-module-cost-total]::before { content: "T. CUSTO"; }
 }

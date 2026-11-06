@@ -37,7 +37,7 @@ function loadLocalEnv() {
 loadLocalEnv();
 
 let workbookData = require('./workbook-data');
-let { catalog, lists, typePresets, enrichModules, calculateModulePrice } = workbookData;
+let { catalog, lists, typePresets, enrichModules, calculateModulePrice, calculateCarpentryPrice } = workbookData;
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -285,7 +285,7 @@ function installCatalog(row) {
   catalogData.costs = costItems.map(item => ({ ...item }));
   syncPaintingServiceCosts(catalogData.catalog?.paintings, costItems);
   workbookData = createPricingEngine(catalogData);
-  ({ catalog, lists, typePresets, enrichModules, calculateModulePrice } = workbookData);
+  ({ catalog, lists, typePresets, enrichModules, calculateModulePrice, calculateCarpentryPrice } = workbookData);
   syncPaintingServiceCosts();
   syncDrawerLaborFromCostItems();
   syncEdgeLaborFromEdgebander();
@@ -1812,6 +1812,17 @@ function quoteWarnings(modules, extras) {
   const warnings = [];
   const hasPlates = Array.isArray(catalog.plates) && catalog.plates.length > 0;
   modules.forEach((module, index) => {
+    if (String(module.carpentryItem || '').trim() && !carpentryModulePrice(module, 'normal').unitCost && !carpentryModulePrice(module, 'normal').unitClient && (Number(module.width) || 0) && (Number(module.height) || 0)) {
+      warnings.push(`Módulo ${index + 1}: artigo de carpintaria sem preço encontrado (${module.carpentryItem}).`);
+    }
+    if (module.carpentry && String(module.carpentryType || '').trim()) {
+      if (!String(module.interior || '').trim() && hasPlates) warnings.push(`Módulo ${index + 1}: falta a madeira da carpintaria.`);
+      else if (!findMaterialForAudit(module.interior)) warnings.push(`Módulo ${index + 1}: madeira da carpintaria sem preço encontrado (${module.interior}).`);
+      if (String(module.frameWood || '').trim() && !findMaterialForAudit(module.frameWood)) {
+        warnings.push(`Módulo ${index + 1}: madeira do aro sem preço encontrado (${module.frameWood}).`);
+      }
+      return;
+    }
     if (module.blank || !String(module.type || '').trim()) return;
     const type = workbookData.inferType(module);
     const piecePlate = type === 'Peças/Placa' || type === 'PeÃ§as/Placa' || type === 'PeÃƒÂ§as/Placa';
@@ -1847,6 +1858,23 @@ function quoteWarnings(modules, extras) {
   return warnings;
 }
 
+// Carpentry articles (doors, fronts, ...) added as a module are priced per m2
+// of the module's width x height, on top of the normal module price.
+function carpentryModulePrice(module, pricingMode) {
+  const wanted = comparableText(module.carpentryItem);
+  if (!wanted) return { unitClient: 0, unitCost: 0 };
+  const item = (catalog.extras || []).find(extra =>
+    comparableText(extra.group) === comparableText('Carpintaria') &&
+    [extra.item, extra.name, extra.label, extra.reference].some(value => comparableText(value) === wanted)
+  );
+  if (!item) return { unitClient: 0, unitCost: 0 };
+  const area = (Number(module.width) || 0) * (Number(module.height) || 0) / 10000;
+  const client = pricingMode === 'reseller'
+    ? (Number(item.reseller) || Number(item.client) || 0)
+    : (Number(item.client) || 0);
+  return { unitClient: area * client, unitCost: area * (Number(item.cost) || 0) };
+}
+
 function calculateQuoteInternal(payload) {
   applyCatalogOverrides(payload.catalog || {});
   const client = payload.client || quoteSeed.client;
@@ -1857,15 +1885,21 @@ function calculateQuoteInternal(payload) {
 
   const moduleLines = modules.map(module => {
     const quantity = Number(module.quantity) || 0;
-    const blankModule = module.blank || !String(module.type || '').trim();
-    const prices = blankModule ? { unitClient: 0, unitCost: 0 } : calculateModulePrice(module, pricingMode);
-    const unitClient = prices.unitClient;
-    const unitCost = prices.unitCost;
+    // Linhas de carpintaria não têm caixote: o preço vem da peça (madeira, orla,
+    // pintura e dobradiças), calculada pelo tipo de carpintaria.
+    const blankModule = module.blank || module.carpentry || !String(module.type || '').trim();
+    const prices = module.carpentry
+      ? calculateCarpentryPrice(module, pricingMode)
+      : blankModule ? { unitClient: 0, unitCost: 0 } : calculateModulePrice(module, pricingMode);
+    const carpentry = carpentryModulePrice(module, pricingMode);
+    const unitClient = money(prices.unitClient + carpentry.unitClient);
+    const unitCost = money(prices.unitCost + carpentry.unitCost);
     return {
       ...module,
       quantity,
       unitClient,
       unitCost,
+      ...(module.carpentry ? { carpentryArea: prices.area || 0, woodPricePerM2: prices.woodPricePerM2 || 0 } : {}),
       totalClient: money(quantity * unitClient),
       totalCost: money(quantity * unitCost)
     };

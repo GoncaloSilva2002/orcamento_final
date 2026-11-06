@@ -6,6 +6,33 @@ const manualExtraGroup = 'Manual';
 const transportExtraGroup = 'Transporte e embalamento';
 const ripadoExtraGroup = 'Ripado/Efeitos';
 const carpentryExtraGroup = 'Carpintaria';
+// Tipos de carpintaria: peças soltas na madeira escolhida, sem caixote.
+const carpentryTypes = ['Porta Standard', 'Porta Standard à Face', 'Porta de Correr Standard', 'Porta Meio Fio', 'Porta Meio Fio à Face', 'Porta Pivot', 'Rodapés'];
+// Espessura fixa de cada porta (cm), dada pelo tipo. A Prof. da linha é a profundidade do aro.
+const carpentryThickness = { 'Porta Standard': 3.5, 'Porta Standard à Face': 3.5, 'Porta de Correr Standard': 3.5, 'Porta Meio Fio': 4.5, 'Porta Meio Fio à Face': 4.5, 'Porta Pivot': 5 };
+// Orçamentos antigos guardaram estes nomes.
+const legacyCarpentryTypes = { 'Porta': 'Porta Standard', 'Porta de correr': 'Porta de Correr Standard' };
+
+// Área da carpintaria (m2): porta (largura x altura) + aro nas portas (2 laterais + topo) x profundidade.
+// Aro sem topo (ao teto): só as 2 laterais.
+function carpentryAreaM2(m) {
+  const w = num(m.width), h = num(m.height), d = num(m.depth);
+  const top = m.frameTop === 'sem' ? 0 : w;
+  // Porta pivot: bandeira (largura da porta x altura da bandeira); o aro sobe porta + bandeira.
+  const transom = normalizeCarpentryType(m.carpentryType) === 'Porta Pivot' ? num(m.transomHeight) : 0;
+  const frame = /^Rodap/.test(normalizeCarpentryType(m.carpentryType)) ? 0 : (2 * (h + transom) + top) * d;
+  return (w * h + w * transom + frame) / 10000;
+}
+
+function normalizeCarpentryType(value) {
+  return legacyCarpentryTypes[value] || value || '';
+}
+
+// Portas de abrir (Standard e Meio Fio, também à face) levam dobradiças; correr, pivot e rodapés não.
+function carpentryUsesHinges(type) {
+  const value = normalizeCarpentryType(type);
+  return ['Porta Standard', 'Porta Standard à Face', 'Porta Meio Fio', 'Porta Meio Fio à Face'].includes(value);
+}
 const pillowEffectItemName = 'Efeito almofada recuada';
 const duriosBinReference = 'BALDE LIXO - DURIOS';
 const duriosBinCompanionReference = 'FUNDO PVC';
@@ -1058,8 +1085,9 @@ function enhanceWoodSearchFields() {
   // Em telemóvel, mantém os selects nativos: são mais fáceis de usar e têm o
   // mesmo comportamento do campo "Tipo de orla". A pesquisa fica no desktop.
   if (mobileLayoutQuery.matches) return;
-  const listIds = { interior: 'moduleInteriorOptions', exterior: 'moduleExteriorOptions' };
-  modulesGrid.querySelectorAll('select[data-field="interior"], select[data-field="exterior"]').forEach(function (select) {
+  const listIds = { interior: 'moduleInteriorOptions', exterior: 'moduleExteriorOptions', frameWood: 'moduleInteriorOptions' };
+  const placeholders = { interior: 'Pesquisar interior...', exterior: 'Pesquisar exterior...', frameWood: 'Pesquisar madeira do aro...' };
+  modulesGrid.querySelectorAll('select[data-field="interior"], select[data-field="exterior"], select[data-field="frameWood"]').forEach(function (select) {
     const field = select.dataset.field;
     const wrap = document.createElement('span');
     const el = document.createElement('input');
@@ -1068,7 +1096,7 @@ function enhanceWoodSearchFields() {
     el.setAttribute('list', listIds[field]);
     el.autocomplete = 'off';
     el.className = 'searchable-wood';
-    el.placeholder = field === 'interior' ? 'Pesquisar interior...' : 'Pesquisar exterior...';
+    el.placeholder = placeholders[field];
     el.disabled = select.disabled;
     el.dataset.module = select.dataset.module;
     el.dataset.field = field;
@@ -1636,7 +1664,38 @@ function hydrateModule(m) {
   return module;
 }
 
+function carpentryDescription(m) {
+  const kind = cleanDisplayText(m.carpentryType || '');
+  if (!kind) return '';
+  const thickness = carpentryThickness[normalizeCarpentryType(m.carpentryType)];
+  const parts = ['CARPINTARIA - ' + kind.toUpperCase() + ' / Largura: ' + m.width + ' cm / Altura: ' + m.height + ' cm' +
+    (num(m.depth) > 0 ? ' / Profundidade aro: ' + m.depth + ' cm' : '') +
+    (thickness ? ' / Espessura porta: ' + String(thickness).replace('.', ',') + ' cm' : '') +
+    (normalizeCarpentryType(m.carpentryType) === 'Porta Pivot' && num(m.transomHeight) > 0 ? ' / Bandeira: ' + m.width + ' x ' + m.transomHeight + ' cm' : '')];
+  const wood = cleanMaterialName(m.interior);
+  const paint = cleanDisplayText(m.paintInterior || '');
+  if (wood) parts.push('Madeira: ' + wood);
+  if (paint && comparableText(paint) !== 'NENHUMA') parts.push('Pintura: ' + paint);
+  if (carpentryUsesHinges(m.carpentryType) && m.hinge && m.hinge !== 'Nenhuma') parts.push('Dobradiça: ' + cleanDisplayText(m.hinge));
+  const frameWood = /^Porta/.test(normalizeCarpentryType(m.carpentryType)) ? cleanMaterialName(m.frameWood) : '';
+  if (frameWood) parts.push('Madeira aro: ' + frameWood);
+  return parts.join(' / ');
+}
+
 function buildDescription(m) {
+  if (m.carpentry && m.carpentryType) {
+    const text = carpentryDescription(m);
+    const legacy = cleanDisplayText(m.carpentryItem || '');
+    return legacy ? text + ' / Carpintaria: ' + legacy : text;
+  }
+  const base = buildModuleDescription(m);
+  const carpentryItem = cleanDisplayText(m.carpentryItem || '');
+  if (!carpentryItem) return base;
+  const carpentryText = 'Carpintaria: ' + carpentryItem + ' / Largura: ' + m.width + ' cm / Altura: ' + m.height + ' cm';
+  return base ? base + ' / ' + carpentryText : carpentryText;
+}
+
+function buildModuleDescription(m) {
   if (m.blank) return '';
   const interior = cleanMaterialName(m.interior);
   const exterior = cleanMaterialName(m.exterior);
@@ -1684,7 +1743,10 @@ function moduleFinalGroup(module) {
 }
 
 function moduleFinalTitle(module) {
-  return moduleDisplayFamily(module);
+  if (module?.carpentry && module.carpentryType) return 'CARPINTARIA - ' + cleanDisplayText(module.carpentryType).toUpperCase();
+  const family = moduleDisplayFamily(module);
+  if (!module?.carpentryItem) return family;
+  return family ? family + ' + CARPINTARIA' : 'CARPINTARIA';
 }
 
 async function calculate(options) {
@@ -1786,6 +1848,8 @@ function updateModule(index, field, value) {
       id: previous.id,
       quantity: previous.quantity,
       furnitureGroupId: previous.furnitureGroupId || '',
+      carpentry: Boolean(previous.carpentry),
+      carpentryItem: previous.carpentryItem || '',
       type: value,
       interior: '',
       exterior: ''
@@ -1807,7 +1871,7 @@ function updateModule(index, field, value) {
     return;
   }
 
-  const numeric = ['quantity','width','height','depth','doors','drawers','shelves','back','divider','unitClient','unitCost'].includes(field);
+  const numeric = ['quantity','width','height','depth','transomHeight','doors','drawers','shelves','back','divider','unitClient','unitCost'].includes(field);
   state.modules[index][field] = numeric ? num(value) : value;
   if (['quantity', 'sideLeftEdge', 'sideRightEdge'].includes(field)) {
     delete state.modules[index].sideDistribution;
@@ -1825,8 +1889,16 @@ function updateModule(index, field, value) {
       state.modules[index].hinge = state.typePresets[state.modules[index].type]?.hinge || state.lists.dobradicas[0];
     }
   }
+  // Porta de abrir leva dobradiça: escolher a primeira da lista se ainda não houver.
+  if (field === 'carpentryType') {
+    const module = state.modules[index];
+    if (!carpentryUsesHinges(value)) module.hinge = 'Nenhuma';
+    else if (!module.hinge || module.hinge === 'Nenhuma') module.hinge = state.lists.dobradicas[0] || '';
+  }
   state.modules[index].description = buildDescription(state.modules[index]);
-  if (field === 'exterior' || field === 'interior' || field === 'doors') renderModules();
+  // Quantity shows or hides the "Dividir por modulo" button under the sides.
+  if (field === 'exterior' || field === 'interior' || field === 'doors' || field === 'quantity' || field === 'carpentryType' || field === 'carpentryItem' || field === 'frameTop' ||
+    (state.modules[index].carpentry && ['width', 'height', 'depth', 'transomHeight'].includes(field))) renderModules();
   calculate();
 }
 
@@ -2350,43 +2422,43 @@ function renderPrintVisuals() {
 }
 
 function furnitureGroupOptions(selectedId) {
-  return '<option value="">Sem móvel</option>' + (state.furnitureGroups || []).map(function (group) {
+  return '<option value="">Sem móvel / porta</option>' + (state.furnitureGroups || []).map(function (group) {
     return '<option value="' + attrEsc(group.id) + '"' + (group.id === selectedId ? ' selected' : '') + '>' + esc(group.name) + '</option>';
   }).join('');
 }
 
 function createFurnitureGroup() {
   const suggested = 'Móvel ' + ((state.furnitureGroups || []).length + 1);
-  const name = window.prompt('Nome do móvel:', suggested);
+  const name = window.prompt('Nome do móvel / porta:', suggested);
   if (!name || !name.trim()) return;
   const cleanName = name.trim();
   if ((state.furnitureGroups || []).some(function (group) { return comparableText(group.name) === comparableText(cleanName); })) {
-    window.alert('Já existe um móvel com esse nome.');
+    window.alert('Já existe um móvel / porta com esse nome.');
     return;
   }
   state.furnitureGroups.push({ id: 'furniture_' + Date.now(), name: cleanName });
   persistQuoteSoon();
   renderModules();
   renderPrint();
-  sourceStatus.textContent = 'Móvel criado: ' + cleanName;
+  sourceStatus.textContent = 'Móvel / porta criado: ' + cleanName;
 }
 
 function manageFurnitureGroups() {
   const groups = state.furnitureGroups || [];
   if (!groups.length) {
-    window.alert('Ainda não existem móveis. Usa “Criar móvel” primeiro.');
+    window.alert('Ainda não existem móveis / portas. Usa “Criar móvel / porta” primeiro.');
     return;
   }
-  const choice = window.prompt('Escolhe o número do móvel que queres alterar:\n' + groups.map(function (group, index) {
+  const choice = window.prompt('Escolhe o número do móvel / porta que queres alterar:\n' + groups.map(function (group, index) {
     return (index + 1) + ' — ' + group.name;
   }).join('\n'));
   const index = Number(choice) - 1;
   if (!Number.isInteger(index) || !groups[index]) return;
   const group = groups[index];
-  const name = window.prompt('Novo nome do móvel. Deixa vazio para eliminar:', group.name);
+  const name = window.prompt('Novo nome do móvel / porta. Deixa vazio para eliminar:', group.name);
   if (name === null) return;
   if (!name.trim()) {
-    if (!window.confirm('Eliminar o móvel “' + group.name + '”? Os módulos ficam em “Sem móvel”.')) return;
+    if (!window.confirm('Eliminar “' + group.name + '”? As linhas ficam em “Sem móvel / porta”.')) return;
     state.modules.forEach(function (module) {
       if (module.furnitureGroupId === group.id) module.furnitureGroupId = '';
     });
@@ -2432,25 +2504,32 @@ function removeModuleSystemFields() {
 
 function renderModules() {
   const sellLabel = state.pricingMode === 'reseller' ? 'REVENDEDOR' : 'CLIENTE';
-  const headings = ['AÃ‡ÃƒO','MÓVEL','TIPO','QTD','LARG.','ALT.','PROF.','PORTAS/FRENTES','PRAT.','INTERIOR','EXTERIOR','PINTURA','SISTEMA','DOBRADIÃ‡A','P. UNIT ' + sellLabel,'TOTAL ' + sellLabel,'CUSTO UNIT.','TOTAL CUSTO'];
+  const headings = ['AÃ‡ÃƒO','MÓVEL / PORTA','TIPO','QTD','LARG.','ALT.','PROF.','PORTAS/FRENTES','PRAT.','INTERIOR','EXTERIOR','PINTURA','SISTEMA','DOBRADIÃ‡A','P. UNIT ' + sellLabel,'TOTAL ' + sellLabel,'CUSTO UNIT.','TOTAL CUSTO'];
   modulesGrid.innerHTML = datalistOptions('moduleInteriorOptions', state.lists.interiores) + datalistOptions('moduleExteriorOptions', state.lists.exteriores) + '<table class="excel-table modules-table"><colgroup>' + '<col>'.repeat(18) + '</colgroup><thead><tr>' + headings.map(function (h, index) { return '<th' + (index >= 16 ? ' class="cost-cell"' : '') + '>' + esc(h) + '</th>'; }).join('') + '</tr></thead><tbody>' + state.modules.map(function (m, i) {
     const piecePlate = isPiecePlate(m);
     const splitButton = num(m.quantity) > 1 ? '<div class="module-split-actions"><button class="soft-inline-button module-split-button" data-split-module="' + i + '" type="button">Dividir por modulo</button></div>' : '';
     const sideIsSplit = hasSideDistribution(m);
-    return '<tr class="module-main-row">' +
+    const isCarpentry = Boolean(m.carpentry || m.carpentryItem);
+    if (m.carpentry) m.carpentryType = normalizeCarpentryType(m.carpentryType);
+    return '<tr class="module-main-row' + (isCarpentry ? ' module-carpentry-row' : '') + '">' +
       '<td class="text-center module-action-cell"><button class="remove-button" data-remove-module="' + i + '" type="button" title="Remover linha">&times;</button></td>' +
       '<td class="input-cell"><select data-module="' + i + '" data-field="furnitureGroupId">' + furnitureGroupOptions(m.furnitureGroupId || '') + '</select></td>' +
-      '<td class="input-cell"><select data-module="' + i + '" data-field="type">' + optionListWithBlank(state.lists.tipos, m.type) + '</select></td>' +
+      (m.carpentry
+        ? '<td class="input-cell"><select data-module="' + i + '" data-field="carpentryType">' + optionListWithBlank(carpentryTypes, m.carpentryType || '') + '</select></td>'
+        : '<td class="input-cell"><select data-module="' + i + '" data-field="type">' + optionListWithBlank(state.lists.tipos, m.type) + '</select></td>') +
       '<td class="input-cell module-quantity-cell">' + input('number', m.quantity, 'min="0" step="1" data-module="' + i + '" data-field="quantity"') + '</td>' +
       '<td class="input-cell module-dimensions-cell"><div class="module-dimensions-inline">' +
         '<label><span>Larg.</span>' + input('number', m.width, 'min="0" step="1" data-module="' + i + '" data-field="width"') + '</label>' +
         '<label><span>Alt.</span>' + input('number', m.height, 'min="0" step="1" data-module="' + i + '" data-field="height"') + '</label>' +
-        '<label><span>Prof.</span>' + input('number', m.depth, 'min="0" step="1" data-module="' + i + '" data-field="depth"' + (piecePlate ? ' disabled' : '')) + '</label>' +
+        // Na carpintaria a Prof. é a profundidade do aro; a espessura da porta é fixa pelo tipo.
+        '<label><span>Prof.</span>' + input('number', m.depth, 'min="0" step="1" data-module="' + i + '" data-field="depth"' + (piecePlate ? ' disabled' : '')).replace('step="1"', m.carpentry ? 'step="0.1"' : 'step="1"') + '</label>' +
       '</div></td>' +
       '<td class="module-dimensions-placeholder" aria-hidden="true"></td>' +
       '<td class="module-dimensions-placeholder" aria-hidden="true"></td>' +
-      '<td class="input-cell">' + input('number', m.doors, 'min="0" step="1" data-module="' + i + '" data-field="doors"' + (piecePlate ? ' disabled' : '')) + '</td>' +
-      '<td class="input-cell">' + input('number', m.shelves, 'min="0" step="1" data-module="' + i + '" data-field="shelves"' + (piecePlate ? ' disabled' : '')) + '</td>' +
+      (m.carpentry
+        ? '<td class="input-cell module-dimensions-placeholder" aria-hidden="true"></td><td class="input-cell module-dimensions-placeholder" aria-hidden="true"></td>'
+        : '<td class="input-cell">' + input('number', m.doors, 'min="0" step="1" data-module="' + i + '" data-field="doors"' + (piecePlate ? ' disabled' : '')) + '</td>' +
+          '<td class="input-cell">' + input('number', m.shelves, 'min="0" step="1" data-module="' + i + '" data-field="shelves"' + (piecePlate ? ' disabled' : '')) + '</td>') +
       '<td class="input-cell"><select data-module="' + i + '" data-field="interior">' + optionListWithBlank(state.lists.interiores, m.interior) + '</select></td>' +
       '<td class="input-cell"><select data-module="' + i + '" data-field="exterior"' + (piecePlate ? ' disabled' : '') + '>' + optionListWithBlank(piecePlate ? ['NÃ£o aplicÃ¡vel'] : state.lists.exteriores, m.exterior) + '</select></td>' +
       '<td class="input-cell"><select data-module="' + i + '" data-field="paintDoor">' + optionListWithBlank(state.lists.pinturas, m.paintDoor) + '</select></td>' +
@@ -2461,9 +2540,28 @@ function renderModules() {
       '<td class="cost-cell text-right money-value" data-module-cost-unit="' + i + '">' + money(state.quote?.modules?.[i]?.unitCost ?? m.unitCost) + '</td>' +
       '<td class="cost-cell text-right" data-module-cost-total="' + i + '">' + money(state.quote?.modules?.[i]?.totalCost || m.quantity * m.unitCost) + '</td>' +
     '</tr>' +
-    '<tr class="module-detail-row"><td colspan="18"><div class="module-details">' +
-      '<label><span>QUANTIDADE</span>' + input('number', m.quantity, 'min="0" step="1" data-module="' + i + '" data-field="quantity"') + '</label>' +
-      '<label><span>MÓVEL</span><select data-module="' + i + '" data-field="furnitureGroupId">' + furnitureGroupOptions(m.furnitureGroupId || '') + '</select></label>' +
+    '<tr class="module-detail-row' + (isCarpentry ? ' module-carpentry-detail' : '') + '"><td colspan="18"><div class="module-details">' +
+      (m.carpentry
+        // Carpintaria: só madeira, pintura, orla e (nas portas de abrir) dobradiça.
+        ? '<label><span>QUANTIDADE</span>' + input('number', m.quantity, 'min="0" step="1" data-module="' + i + '" data-field="quantity"') + '</label>' +
+          '<label><span>MÓVEL / PORTA</span><select data-module="' + i + '" data-field="furnitureGroupId">' + furnitureGroupOptions(m.furnitureGroupId || '') + '</select></label>' +
+          '<label><span>MADEIRA</span><select data-module="' + i + '" data-field="interior">' + optionListWithBlank(state.lists.interiores, m.interior) + '</select></label>' +
+          '<label><span>PINTURA</span><select data-module="' + i + '" data-field="paintInterior">' + optionListWithBlank(state.lists.pinturas, m.paintInterior) + '</select></label>' +
+          (m.carpentryType === 'Porta Pivot' ? '<label><span>ALTURA BANDEIRA (cm)</span>' + input('number', num(m.transomHeight) || '', 'min="0" step="0.1" placeholder="Sem bandeira" data-module="' + i + '" data-field="transomHeight"') + '</label>' : '') +
+          (/^Porta/.test(m.carpentryType || '') ? '<label><span>ARO</span><select data-module="' + i + '" data-field="frameTop">' +
+            '<option value=""' + (m.frameTop === 'sem' ? '' : ' selected') + '>Com topo (2 laterais + topo)</option>' +
+            '<option value="sem"' + (m.frameTop === 'sem' ? ' selected' : '') + '>Sem topo, ao teto (só 2 laterais)</option>' +
+            '</select></label>' +
+            // O aro tem a sua própria madeira (a porta é MDF; o aro é outro material).
+            '<label><span>MADEIRA ARO</span><select data-module="' + i + '" data-field="frameWood">' + optionListWithBlank(state.lists.interiores, m.frameWood || '') + '</select></label>' : '') +
+          '<label><span>ÁREA (m²)</span>' + input('text', carpentryAreaM2(m).toFixed(3).replace('.', ','), 'readonly tabindex="-1"') + '</label>' +
+          (carpentryThickness[m.carpentryType] ? '<label><span>ESPESSURA PORTA (cm)</span>' + input('text', String(carpentryThickness[m.carpentryType]).replace('.', ','), 'readonly tabindex="-1"') + '</label>' : '') +
+          (carpentryUsesHinges(m.carpentryType) ? '<label><span>DOBRADIÇA</span><select data-module="' + i + '" data-field="hinge">' + optionListWithBlank(state.lists.dobradicas, m.hinge) + '</select></label>' : '') +
+          // Orçamentos antigos: o artigo de carpintaria (€/m²) continua visível para poder ser retirado.
+          (m.carpentryItem ? '<label class="module-carpentry-field"><span>ARTIGO CARPINTARIA ANTIGO (€/m²)</span><select data-module="' + i + '" data-field="carpentryItem">' + optionListWithBlank(carpentryItemNames().concat([m.carpentryItem]).filter(function (v, k, a) { return a.indexOf(v) === k; }), m.carpentryItem) + '</select></label>' : '')
+        : (m.carpentryItem ? '<label class="module-carpentry-field"><span>ARTIGO CARPINTARIA (€/m²)</span><select data-module="' + i + '" data-field="carpentryItem">' + optionListWithBlank(carpentryItemNames(), m.carpentryItem || '') + '</select></label>' : '') +
+          '<label><span>QUANTIDADE</span>' + input('number', m.quantity, 'min="0" step="1" data-module="' + i + '" data-field="quantity"') + '</label>' +
+      '<label><span>MÓVEL / PORTA</span><select data-module="' + i + '" data-field="furnitureGroupId">' + furnitureGroupOptions(m.furnitureGroupId || '') + '</select></label>' +
       '<label><span>INTERIOR</span><select data-module="' + i + '" data-field="interior">' + optionListWithBlank(state.lists.interiores, m.interior) + '</select></label>' +
       '<label><span>EXTERIOR</span><select data-module="' + i + '" data-field="exterior"' + (piecePlate ? ' disabled' : '') + '>' + optionListWithBlank(piecePlate ? ['Não aplicável'] : state.lists.exteriores, m.exterior) + '</select></label>' +
       '<label><span>PINTURA</span><select data-module="' + i + '" data-field="paintDoor">' + optionListWithBlank(state.lists.pinturas, m.paintDoor) + '</select></label>' +
@@ -2478,7 +2576,7 @@ function renderModules() {
         splitButton +
       '</div>' +
       '<label><span>COSTA</span>' + input('number', m.back, 'min="0" step="1" data-module="' + i + '" data-field="back"' + (piecePlate ? ' disabled' : '')) + '</label>' +
-      '<label><span>' + esc('DIVISÃ“RIA') + '</span>' + input('number', m.divider, 'min="0" step="1" data-module="' + i + '" data-field="divider"' + (piecePlate ? ' disabled' : '')) + '</label>' +
+      '<label><span>' + esc('DIVISÃ“RIA') + '</span>' + input('number', m.divider, 'min="0" step="1" data-module="' + i + '" data-field="divider"' + (piecePlate ? ' disabled' : '')) + '</label>') +
     '</div></td></tr>';
   }).join('') + '</tbody></table>' +
     (state.modules.length ? '' : '<div class="quote-empty-state">Ainda não há módulos neste orçamento. Usa <strong>+ Adicionar caixote</strong> para começar.</div>');
@@ -2621,7 +2719,7 @@ function splitModuleQuantity(index) {
 function renderFinal() {
   state.extras = ledTransformers.arrange(state.extras, state.catalog.extras || []).extras;
   const sellLabel = state.pricingMode === 'reseller' ? 'REVENDEDOR' : 'CLIENTE';
-  const headings = ['MÓVEL','GRUPO','DESCRIÃ‡ÃƒO','QTD','P. UNIT ' + sellLabel,'TOTAL ' + sellLabel,'CUSTO UNIT.','TOTAL CUSTO','DESCRIÃ‡ÃƒO FINAL','AÃ‡ÃƒO'];
+  const headings = ['MÓVEL / PORTA','GRUPO','DESCRIÃ‡ÃƒO','QTD','P. UNIT ' + sellLabel,'TOTAL ' + sellLabel,'CUSTO UNIT.','TOTAL CUSTO','DESCRIÃ‡ÃƒO FINAL','AÃ‡ÃƒO'];
   const extraGroups = Array.from(new Set((state.lists.extraGroups || []).concat([manualExtraGroup]).map(normalizeExtraGroupName).filter(Boolean)));
   prepareWardrobeDrawerExtras();
   finalGrid.innerHTML = '<table class="excel-table final-table"><colgroup>' + '<col>'.repeat(10) + '</colgroup><thead><tr>' + headings.map(function (h, index) { return '<th' + (index === 6 || index === 7 ? ' class="cost-cell"' : '') + '>' + esc(h) + '</th>'; }).join('') + '</tr></thead><tbody>' +
@@ -2850,9 +2948,20 @@ function renderPrint() {
     renderPrintVisuals();
 }
 
-function addModule() {
+function carpentryItemNames() {
+  return Array.from(new Set((state.catalog?.extras || [])
+    .filter(function (item) { return normalizeExtraGroupName(item.group) === carpentryExtraGroup; })
+    .map(function (item) { return item.item || item.name || item.label; })
+    .filter(Boolean)));
+}
+
+function addModule(options) {
+  const carpentry = Boolean(options && options.carpentry);
   state.modules.push({
     id: 'module_' + Date.now(),
+    carpentry: carpentry,
+    carpentryType: '',
+    carpentryItem: '',
     blank: true,
     furnitureGroupId: '',
     type: '',
@@ -2889,6 +2998,13 @@ function addModule() {
 function addExtra() {
   state.extras.push({ id: 'extra_' + Date.now(), furnitureGroupId: '', group: '', item: '', quantity: '', unitClient: 0, unitCost: 0, lacquered: false });
   calculate();
+}
+
+function addCarpentry() {
+  addModule({ carpentry: true });
+  const rows = modulesGrid.querySelectorAll('.module-main-row');
+  const row = rows[rows.length - 1];
+  if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 function resetQuote() {
@@ -6696,9 +6812,10 @@ function renderSupplierPrices() {
   supplierExtraGroups.add('Gavetas');
   supplierExtraGroups.add(transportExtraGroup);
   supplierExtraGroups.add(ripadoExtraGroup);
-  supplierExtraGroups.add(carpentryExtraGroup);
+  // A carpintaria é calculada pela madeira escolhida, por isso não tem aba de preços própria.
   Array.from(supplierExtraGroups).filter(function (group) {
-    return normalizeExtraGroupName(group) !== doorSystemExtraGroup;
+    const name = normalizeExtraGroupName(group);
+    return name !== doorSystemExtraGroup && name !== carpentryExtraGroup;
   }).forEach(function (group) {
     group = normalizeExtraGroupName(group);
     const extraRows = state.catalog.extras
@@ -6724,7 +6841,7 @@ function renderSupplierPrices() {
     sections.push(renderSupplierSection(group, extraRows + drawerRows));
   });
   sections.push(renderCostSection());
-  const tabOrder = ['Madeiras / Placas', 'Puxadores', 'Rodapés (metros)', "LED'S (metros)", 'Pinturas', 'Orlas', 'Sistemas de abertura', 'Dobradicas / Ferragens', 'Outros', carpentryExtraGroup, ripadoExtraGroup, 'Gavetas', 'Transporte e embalamento', 'Custos'];
+  const tabOrder = ['Madeiras / Placas', 'Puxadores', 'Rodapés (metros)', "LED'S (metros)", 'Pinturas', 'Orlas', 'Sistemas de abertura', 'Dobradicas / Ferragens', 'Outros', ripadoExtraGroup, 'Gavetas', 'Transporte e embalamento', 'Custos'];
   sections.sort(function (a, b) {
     const title = html => (html.match(/<h3>(.*?)<\/h3>/) || [null, ''])[1];
     const ai = tabOrder.indexOf(title(a));
@@ -7752,10 +7869,11 @@ document.addEventListener('keydown', function (event) {
   if (event.key === 'Escape' && moduleSplitState) closeModuleSplitModal();
 });
 
-document.querySelector('#addModuleButton').addEventListener('click', addModule);
+document.querySelector('#addModuleButton').addEventListener('click', function () { addModule(); });
 document.querySelector('#addFurnitureButton').addEventListener('click', createFurnitureGroup);
 document.querySelector('#manageFurnitureButton').addEventListener('click', manageFurnitureGroups);
 document.querySelector('#addExtraButton').addEventListener('click', addExtra);
+document.querySelector('#addCarpentryButton').addEventListener('click', addCarpentry);
 document.querySelector('#resetButton').addEventListener('click', resetQuote);
 if (saveHistoryButton) {
   saveHistoryButton.addEventListener('click', function () {
